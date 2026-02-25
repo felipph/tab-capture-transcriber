@@ -1,9 +1,6 @@
-# Captura de ligações do TEAMs
+# Tab Capture Pro – Chrome Extension
 
-
-# Teams Capture – Chrome Extension
-
-Record audio and take screenshots from MS Teams (browser version) with a single click.
+Record audio and take screenshots from **any browser tab** with a single click. Special features available for Microsoft Teams.
 
 ---
 
@@ -12,19 +9,28 @@ Record audio and take screenshots from MS Teams (browser version) with a single 
 1. Open Chrome and go to `chrome://extensions/`
 2. Enable **Developer Mode** (top-right toggle)
 3. Click **Load Unpacked**
-4. Select this folder (`teams-capture-extension/`)
+4. Select the `ext/` folder
 
 ---
 
 ## How to Use
 
-1. Navigate to **Microsoft Teams** in your browser (`teams.microsoft.com`)
-2. Click the extension icon in the toolbar
-3. Hit **▶ Start** to begin capturing
-4. Click **📷 Snap** anytime for an instant screenshot
-5. Click **■ Stop** to end — the recording is saved automatically
+### Recording Any Tab
+1. Click the extension icon in the toolbar
+2. **Select the tab** you want to record from the list
+3. Click **Abrir Recorder** to open the recorder window
+4. Hit **▶ Iniciar** to begin capturing
+5. Click **📷 Print** anytime for an instant screenshot
+6. Click **■ Parar** to end — the recording is saved automatically
 
-All files are saved to your **Downloads/TeamsCapture/** folder:
+### Teams Integration (Special Features)
+When recording a Microsoft Teams tab, you get additional features:
+- Automatic detection of call start/end
+- Participant list extraction
+- Active speaker detection
+- Auto-start recording option
+
+All files are saved to your **Downloads/TabCapture/** folder:
 - `recordings/` → `.webm` video+audio files
 - `screenshots/` → `.png` screenshots
 
@@ -33,33 +39,35 @@ All files are saved to your **Downloads/TeamsCapture/** folder:
 ## Common Issues & Fixes
 
 ### "tabCapture returned null" or permission denied
-- Make sure you're on the actual Teams tab (not a chrome:// page)
+- Make sure you're not on a `chrome://` page (internal Chrome pages cannot be captured)
 - Check that the extension has the `tabCapture` permission in `chrome://extensions/`
-- Try clicking directly on the Teams tab first, then open the popup
+- Try clicking directly on the target tab first, then open the popup
 
 ### No audio in recording
-- Enable the **Record Audio** toggle before starting
-- Note: Chrome's `tabCapture` captures tab audio — make sure Teams audio is unmuted
+- Enable the **Capturar mic + aba** toggle before starting
+- Note: Chrome's `tabCapture` captures tab audio — make sure the tab's audio is unmuted
 
 ### Screenshots are blank or black
 - This happens on some hardware-accelerated pages. Try disabling GPU acceleration:
   `chrome://flags/#disable-accelerated-2d-canvas` → set to Disabled
 
-### Extension works on web Teams only
-- The MS Teams **desktop app** is not a browser tab — it can't be captured with `tabCapture`
-- Use **MS Teams in Chrome** (`teams.microsoft.com`) for this extension to work
+### Extension works on browser tabs only
+- Desktop applications cannot be captured with `tabCapture`
+- Use the browser version of apps (e.g., Teams in Chrome) for this extension to work
 
 ---
 
 ## File Structure
 
 ```
-teams-capture-extension/
+ext/
 ├── manifest.json      ← Extension config (Manifest V3)
 ├── background.js      ← Service worker: handles tabCapture + MediaRecorder
-├── popup.html         ← Extension UI
-├── popup.js           ← UI logic + messaging
-├── content.js         ← Content script (lightweight)
+├── popup.html         ← Extension UI (tab selector)
+├── popup.js           ← UI logic + tab selection
+├── recorder.html      ← Recorder window UI
+├── recorder.js        ← Recording logic + controls
+├── content.js         ← Content script (Teams-specific features)
 └── icons/             ← Extension icons
 ```
 
@@ -67,11 +75,12 @@ teams-capture-extension/
 
 ## Technical Notes
 
-- Uses **`chrome.tabCapture`** API to capture both video and audio from the active tab
+- Uses **`chrome.tabCapture`** API to capture both video and audio from any tab
 - Uses **`MediaRecorder`** with `video/webm` codec for recordings
 - Uses **`chrome.tabs.captureVisibleTab`** for screenshots (higher quality than canvas)
 - All files are saved via **`chrome.downloads`** API — no server needed
 - Settings (audio toggle, auto-snap interval) persist via `chrome.storage.local`
+- Works with **any website**, with special features for Microsoft Teams
 
 
 

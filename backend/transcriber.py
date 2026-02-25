@@ -17,7 +17,7 @@ from typing import Optional
 from dataclasses import dataclass, field
 
 try:
-    import whisper
+    from faster_whisper import WhisperModel
     WHISPER_AVAILABLE = True
 except ImportError:
     WHISPER_AVAILABLE = False
@@ -136,7 +136,7 @@ def transcribe(session_dir: Path, model_name: str = "medium",
 
     if not WHISPER_AVAILABLE:
         raise RuntimeError(
-            "Whisper não instalado. Execute: pip install openai-whisper"
+            "faster-whisper não instalado. Execute: pip install faster-whisper"
         )
 
     _print_step("Verificando arquivos...")
@@ -160,32 +160,33 @@ def transcribe(session_dir: Path, model_name: str = "medium",
     wav_size = audio_wav.stat().st_size / 1024 / 1024
     _print_ok(f"WAV gerado ({wav_size:.1f} MB)")
 
-    # ── Carrega modelo Whisper ─────────────────────────────────────────────────
-    _print_step(f"Carregando modelo Whisper '{model_name}'...")
-    model = whisper.load_model(model_name)
+    # ── Carrega modelo faster-whisper ──────────────────────────────────────────
+    _print_step(f"Carregando modelo faster-whisper '{model_name}'...")
+    model = WhisperModel(model_name, compute_type="auto")
     _print_ok("Modelo carregado")
 
     # ── Transcrição ────────────────────────────────────────────────────────────
     _print_step("Transcrevendo... (pode demorar alguns minutos)")
-    result = model.transcribe(
+    segments_iter, info = model.transcribe(
         str(audio_wav),
         language=language or None,
-        word_timestamps=True,        # habilita timestamps por palavra
-        verbose=False,
-        task="transcribe",
+        word_timestamps=True,
+        vad_filter=True,
+        beam_size=5,
         condition_on_previous_text=True,
-        fp16=False,                  # mais compatível sem GPU dedicada
     )
-    _print_ok(f"Transcrição concluída ({len(result['segments'])} segmentos)")
+
+    raw_segments = list(segments_iter)
+    _print_ok(f"Transcrição concluída ({len(raw_segments)} segmentos)")
 
     # ── Alinha speakers com segmentos ─────────────────────────────────────────
     _print_step("Alinhando locutores com segmentos...")
     segments: list[TranscriptSegment] = []
 
-    for seg in result["segments"]:
-        start = seg["start"]
-        end   = seg["end"]
-        text  = seg["text"].strip()
+    for seg in raw_segments:
+        start = seg.start
+        end   = seg.end
+        text  = seg.text.strip()
 
         if not text:
             continue
@@ -196,13 +197,14 @@ def transcribe(session_dir: Path, model_name: str = "medium",
 
         # Extrai word-level timestamps se disponível
         words = []
-        for w in seg.get("words", []):
-            words.append({
-                "word":  w.get("word", "").strip(),
-                "start": round(w.get("start", start), 3),
-                "end":   round(w.get("end", end), 3),
-                "prob":  round(w.get("probability", 1.0), 3),
-            })
+        if seg.words:
+            for w in seg.words:
+                words.append({
+                    "word":  w.word.strip(),
+                    "start": round(w.start, 3),
+                    "end":   round(w.end, 3),
+                    "prob":  round(w.probability, 3),
+                })
 
         segments.append(TranscriptSegment(
             speaker=sp,
@@ -229,7 +231,7 @@ def transcribe(session_dir: Path, model_name: str = "medium",
     # ── Monta resultado final ─────────────────────────────────────────────────
     transcript = {
         "session_id":    session_dir.name,
-        "language":      result.get("language", language),
+        "language":      info.language if info.language else language,
         "model":         model_name,
         "participants":  list(participants.values()),
         "total_duration": round(max((s.end for s in segments), default=0), 2),
@@ -351,13 +353,136 @@ def _print_transcript_table(transcript: dict):
     console.print(table)
 
 
+def save_live_transcript(session_dir: Path, live_segments: list,
+                         model_name: str = "large-v3-turbo",
+                         language: str = "pt") -> dict:
+    """
+    Salva segmentos já transcritos em tempo real (do LiveTranscriber)
+    nos formatos JSON, TXT e SRT — sem re-transcrever o áudio.
+
+    live_segments: lista de LiveSegment (ou objetos com .text, .start, .end, .speaker, .words)
+    """
+    out_json = session_dir / "transcript.json"
+    out_txt  = session_dir / "transcript.txt"
+    out_srt  = session_dir / "transcript.srt"
+
+    # Converte LiveSegment → TranscriptSegment
+    segments = [
+        TranscriptSegment(
+            speaker=seg.speaker or "Desconhecido",
+            start=round(seg.start, 3),
+            end=round(seg.end, 3),
+            text=seg.text,
+            words=seg.words if seg.words else [],
+        )
+        for seg in live_segments if seg.text.strip()
+    ]
+
+    # Mescla segmentos consecutivos do mesmo speaker
+    segments = merge_segments(segments)
+    _print_ok(f"{len(segments)} segmentos após mesclagem (live)")
+
+    # Speaker stats
+    stats = {}
+    for seg in segments:
+        sp = seg.speaker or "Desconhecido"
+        if sp not in stats:
+            stats[sp] = {"segments": 0, "words": 0, "duration": 0.0}
+        stats[sp]["segments"] += 1
+        stats[sp]["words"]    += len(seg.text.split())
+        stats[sp]["duration"] += seg.end - seg.start
+
+    # Carrega participantes se disponível
+    speaker_file = session_dir / "speaker_map.json"
+    participants = {}
+    if speaker_file.exists():
+        data = json.loads(speaker_file.read_text(encoding="utf-8"))
+        participants = data.get("participants", {})
+
+    transcript = {
+        "session_id":    session_dir.name,
+        "language":      language,
+        "model":         f"{model_name} (live)",
+        "participants":  list(participants.values()),
+        "total_duration": round(max((s.end for s in segments), default=0), 2),
+        "speaker_stats": {
+            sp: {
+                "segments": v["segments"],
+                "words":    v["words"],
+                "duration_seconds": round(v["duration"], 1),
+                "speaking_pct": round(
+                    100 * v["duration"] /
+                    max(sum(s["duration"] for s in stats.values()), 0.001), 1
+                )
+            }
+            for sp, v in stats.items()
+        },
+        "segments": [
+            {
+                "speaker":  s.speaker,
+                "start":    s.start,
+                "end":      s.end,
+                "duration": round(s.end - s.start, 3),
+                "text":     s.text,
+                "words":    s.words,
+            }
+            for s in segments
+        ],
+    }
+
+    # Persiste JSON
+    out_json.write_text(
+        json.dumps(transcript, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    # Persiste TXT
+    lines = [
+        f"═══ Transcrição (live) — Sessão {session_dir.name} ═══",
+        f"Idioma: {language} | Modelo: {model_name}",
+        f"Participantes: {', '.join(transcript['participants']) or 'Não detectados'}",
+        f"Duração total: {format_time(transcript['total_duration'])}",
+        "",
+        "─── Participação ─────────────────────────────────────",
+    ]
+    for sp, v in transcript["speaker_stats"].items():
+        lines.append(
+            f"  {sp}: {v['words']} palavras · {format_time(v['duration_seconds'])} "
+            f"({v['speaking_pct']}%)"
+        )
+    lines += ["", "─── Transcrição ──────────────────────────────────────", ""]
+    prev_speaker = None
+    for seg in segments:
+        sp = seg.speaker or "Desconhecido"
+        if sp != prev_speaker:
+            if prev_speaker is not None:
+                lines.append("")
+            lines.append(f"[{format_time(seg.start)}]  {sp.upper()}")
+            prev_speaker = sp
+        lines.append(f"  {seg.text}")
+    out_txt.write_text("\n".join(lines), encoding="utf-8")
+
+    # Persiste SRT
+    srt_lines = []
+    for i, seg in enumerate(segments, 1):
+        start_srt = _seconds_to_srt(seg.start)
+        end_srt   = _seconds_to_srt(seg.end)
+        sp = seg.speaker or "?"
+        srt_lines += [str(i), f"{start_srt} --> {end_srt}", f"<{sp}> {seg.text}", ""]
+    out_srt.write_text("\n".join(srt_lines), encoding="utf-8")
+
+    _print_ok(f"Arquivos gerados em {session_dir}/ (live transcript)")
+    _print_transcript_table(transcript)
+
+    return transcript
+
+
 # ── CLI stand-alone ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Transcreve uma sessão gravada")
     parser.add_argument("session_dir", help="Caminho para o diretório da sessão")
     parser.add_argument("--model",    default="medium",
-                        choices=["tiny","base","small","medium","large","large-v2","large-v3"])
+                        choices=["tiny","base","small","medium","large","large-v2","large-v3","large-v3-turbo"])
     parser.add_argument("--language", default="pt",
                         help="Código do idioma (pt, en, es, ...) ou deixe vazio para auto-detect")
     args = parser.parse_args()

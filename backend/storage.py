@@ -8,7 +8,8 @@ Cada sessão recebe um diretório próprio com:
   ├── frames/             ← PNGs de conteúdo compartilhado
   │   └── frame_0001_<speaker>_<elapsed>.png
   ├── transcript.json     ← saída final da transcrição (gerado pelo transcriber)
-  └── transcript.txt      ← versão legível da transcrição
+  ├── transcript.txt      ← versão legível da transcrição
+  └── transcript.srt      ← legenda no formato SRT
 """
 
 import os

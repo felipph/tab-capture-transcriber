@@ -3,15 +3,18 @@
 //   1. Detectar início/fim de chamada
 //   2. Extrair lista de participantes
 //   3. Detectar locutor ativo (quem está falando)
-//   4. Enviar todos os eventos para o background
+//   4. Detectar compartilhamento de conteúdo (tela/apresentação)
+//   5. Enviar todos os eventos para o background
 
 (function () {
   'use strict';
 
-  let inCall        = false;
-  let participants  = new Map(); // id → name
-  let activeSpeaker = null;
-  let observers     = [];
+  let inCall           = false;
+  let participants     = new Map(); // id → name
+  let activeSpeaker    = null;
+  let contentSharing   = false;
+  let contentShareUser = null;
+  let observers        = [];
 
   // ── Seletores do DOM do Teams (múltiplos fallbacks por versão) ─────────────
   const SELECTORS = {
@@ -46,6 +49,32 @@
       '[data-cid="calling-roster-section"]',
       '[aria-label*="Participants" i]',
       '[aria-label*="Participantes" i]',
+    ],
+    // Compartilhamento de conteúdo (tela/apresentação)
+    contentSharing: [
+      '[data-tid="content-sharing-screen"]',
+      '[data-tid="shared-content"]',
+      '[class*="sharingIndicator"]',
+      '[class*="contentSharing"]',
+      '[class*="screenSharing"]',
+      '[class*="shared-screen"]',
+      '[class*="presentingContent"]',
+      '[aria-label*="presenting" i]',
+      '[aria-label*="apresentando" i]',
+      '[aria-label*="sharing" i]',
+      '[aria-label*="compartilhando" i]',
+      '[class*="stageLayout"]',
+      '[data-tid="content-share-view"]',
+      '[class*="ContentShareView"]',
+    ],
+    // Quem está apresentando
+    contentSharePresenter: [
+      '[class*="sharingIndicator"] [class*="displayName"]',
+      '[class*="sharingIndicator"] span[title]',
+      '[aria-label*="presenting" i]',
+      '[aria-label*="apresentando" i]',
+      '[class*="presenterName"]',
+      '[data-tid="sharing-indicator"] span',
     ],
     // Locutor ativo — Teams marca visualmente quem está falando
     activeSpeaker: [
@@ -109,6 +138,8 @@
       stopObservers();
       participants.clear();
       activeSpeaker = null;
+      contentSharing = false;
+      contentShareUser = null;
     }
   }
 
@@ -188,6 +219,45 @@
     }
   }
 
+  // ── Detecta compartilhamento de conteúdo ──────────────────────────────────
+  function detectContentSharing() {
+    const sharingNow = !!queryOne(SELECTORS.contentSharing);
+
+    // Tenta extrair quem está apresentando
+    let presenter = null;
+    if (sharingNow) {
+      const presenterEls = queryAll(SELECTORS.contentSharePresenter);
+      for (const el of presenterEls) {
+        const name = extractName(el);
+        if (name && name.length > 1) {
+          presenter = name;
+          break;
+        }
+      }
+    }
+
+    if (sharingNow && !contentSharing) {
+      contentSharing = true;
+      contentShareUser = presenter;
+      send('CONTENT_SHARING_START', {
+        presenter: presenter,
+        timestamp: Date.now()
+      });
+    } else if (!sharingNow && contentSharing) {
+      contentSharing = false;
+      contentShareUser = null;
+      send('CONTENT_SHARING_STOP', {
+        timestamp: Date.now()
+      });
+    } else if (sharingNow && presenter !== contentShareUser) {
+      contentShareUser = presenter;
+      send('CONTENT_SHARING_PRESENTER_CHANGE', {
+        presenter: presenter,
+        timestamp: Date.now()
+      });
+    }
+  }
+
   // ── Observers ─────────────────────────────────────────────────────────────
   function startObservers() {
     stopObservers(); // evita duplicatas
@@ -196,6 +266,7 @@
     const mainObserver = new MutationObserver(() => {
       collectParticipants();
       detectActiveSpeaker();
+      detectContentSharing();
     });
 
     mainObserver.observe(document.body, {
@@ -210,6 +281,7 @@
     // Coleta inicial
     collectParticipants();
     detectActiveSpeaker();
+    detectContentSharing();
   }
 
   function stopObservers() {
@@ -237,6 +309,8 @@
         inCall,
         participants: Object.fromEntries(participants),
         activeSpeaker,
+        contentSharing,
+        contentShareUser,
         timestamp: Date.now()
       });
     }

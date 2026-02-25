@@ -2,13 +2,13 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8"/>
-  <title>Teams Capture Pro</title>
+  <title>Tab Capture Pro</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap');
     :root { --bg:#0a0a0f; --surface:#13131c; --border:#1e1e2e;
-            --accent:#5865f2; --text:#e8e8f0; --muted:#6b6b8a; }
+            --accent:#5865f2; --text:#e8e8f0; --muted:#6b6b8a; --green:#3ecf8e; }
     * { box-sizing:border-box; margin:0; padding:0; }
-    body { width:280px; background:var(--bg); color:var(--text);
+    body { width:320px; background:var(--bg); color:var(--text);
            font-family:'IBM Plex Sans',sans-serif; font-size:13px; }
     .header { background:var(--surface); border-bottom:1px solid var(--border);
               padding:14px 16px; display:flex; align-items:center; gap:10px; }
@@ -16,30 +16,83 @@
             border-radius:6px; display:flex;align-items:center;justify-content:center; font-size:14px; }
     .header-text h1 { font-size:13px; font-weight:600; }
     .header-text p  { font-size:10px; color:var(--muted); font-family:'IBM Plex Mono',monospace; margin-top:1px; }
-    .body { padding:16px; display:flex; flex-direction:column; gap:10px; }
+    .body { padding:16px; display:flex; flex-direction:column; gap:12px; }
+
+    .section-label { font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:600;
+                     letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin-bottom:8px; }
+
+    .tab-list { max-height:200px; overflow-y:auto; border:1px solid var(--border);
+                border-radius:8px; background:var(--surface); }
+    .tab-list::-webkit-scrollbar { width:4px; }
+    .tab-list::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+
+    .tab-item { padding:10px 12px; border-bottom:1px solid var(--border);
+                display:flex; align-items:center; gap:10px; cursor:pointer;
+                transition:background .15s; }
+    .tab-item:last-child { border-bottom:none; }
+    .tab-item:hover { background:var(--border); }
+    .tab-item.selected { background:rgba(88,101,242,0.2); border-left:3px solid var(--accent); }
+
+    .tab-favicon { width:16px; height:16px; border-radius:3px; flex-shrink:0;
+                   background:var(--border); }
+    .tab-favicon-wrapper { width:16px; height:16px; flex-shrink:0; }
+    .tab-info { flex:1; min-width:0; }
+    .tab-title { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .tab-url { font-size:10px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .tab-badge { font-size:9px; padding:2px 6px; border-radius:4px; font-weight:600;
+                 background:rgba(62,207,142,0.2); color:var(--green); }
+
+    .no-tabs { padding:20px; text-align:center; color:var(--muted); font-size:12px; }
+
     .info { background:var(--surface); border:1px solid var(--border); border-radius:8px;
             padding:12px; font-size:12px; line-height:1.6; color:var(--muted); }
     .info strong { color:var(--text); }
+
     .btn { width:100%; padding:10px; border:none; border-radius:8px;
            background:var(--accent); color:#fff; font-size:13px; font-weight:600;
            cursor:pointer; font-family:'IBM Plex Sans',sans-serif; transition:background .15s; }
     .btn:hover { background:#6c75f5; }
+    .btn:disabled { opacity:.4; cursor:not-allowed; }
+    .btn-secondary { background:var(--surface); border:1px solid var(--border); color:var(--text); }
+    .btn-secondary:hover { background:var(--border); }
+
+    .selected-info { background:var(--surface); border:1px solid var(--border);
+                     border-radius:8px; padding:10px 12px; display:flex; align-items:center; gap:10px; }
+    .selected-info .tab-title { font-weight:600; }
+
+    .loading { text-align:center; padding:20px; color:var(--muted); }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="logo">◉</div>
     <div class="header-text">
-      <h1>Teams Capture Pro</h1>
-      <p>participantes · áudio · ws</p>
+      <h1>Tab Capture Pro</h1>
+      <p>grave qualquer aba</p>
     </div>
   </div>
   <div class="body">
-    <div class="info">
-      A janela do recorder abre <strong>automaticamente</strong> ao entrar em uma chamada.<br><br>
-      Ou clique abaixo para abrir manualmente.
+    <div class="section-label">Selecione uma aba para gravar</div>
+    <div class="tab-list" id="tabList">
+      <div class="loading">Carregando abas...</div>
     </div>
-    <button class="btn" id="btnOpen">Abrir Recorder</button>
+
+    <div id="selectedSection" style="display:none;">
+      <div class="section-label">Aba selecionada</div>
+      <div class="selected-info" id="selectedInfo"></div>
+    </div>
+
+    <button class="btn" id="btnOpen" disabled>Abrir Recorder</button>
+
+    <div class="info" id="teamsInfo" style="display:none;">
+      <strong>Teams detectado!</strong><br>
+      Recursos especiais disponíveis: detecção de participantes e locutor ativo.
+    </div>
+
+    <div class="info">
+      A janela do recorder abre <strong>automaticamente</strong> ao entrar em uma chamada do Teams.<br><br>
+      Ou selecione uma aba e clique em <strong>Abrir Recorder</strong> para gravar manualmente.
+    </div>
   </div>
   <script src="popup.js"></script>
 </body>

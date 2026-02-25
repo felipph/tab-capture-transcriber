@@ -10,7 +10,7 @@ Processa em tempo real:
   • Grava áudio continuamente em audio.webm
   • Salva frames PNG com nome incluindo speaker e timestamp
   • Constrói timeline e speaker_map em memória
-  • Ao receber RECORDING_STOP, persiste metadados e dispara transcrição
+  • Ao receber RECORDING_STOP, transcreve o áudio completo
 
 Uso:
     python server.py [--host 0.0.0.0] [--port 8765]
@@ -24,6 +24,7 @@ import argparse
 import datetime
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,7 @@ from websockets.server import WebSocketServerProtocol
 
 from storage import Session, new_session_id
 from transcriber import transcribe, WHISPER_AVAILABLE
+from live_transcriber import LiveTranscriber, LiveSegment, FASTER_WHISPER_AVAILABLE
 
 try:
     from rich.console import Console
@@ -60,6 +62,8 @@ cfg = Config()
 
 # Sessões ativas: websocket → Session
 active_sessions: dict[WebSocketServerProtocol, Session] = {}
+# Transcrição em tempo real: websocket → LiveTranscriber
+active_transcribers: dict[WebSocketServerProtocol, LiveTranscriber] = {}
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -109,34 +113,49 @@ async def handle_client(websocket: WebSocketServerProtocol):
     session.open_audio()
     active_sessions[websocket] = session
 
+    # Cria transcritor em tempo real se faster-whisper estiver disponível
+    live_tr = None
+    if FASTER_WHISPER_AVAILABLE and cfg.auto_transcribe:
+        live_tr = LiveTranscriber(
+            model_name=cfg.whisper_model,
+            language=cfg.language,
+            transcribe_interval=8.0,
+        )
+        active_transcribers[websocket] = live_tr
+
     client_addr = websocket.remote_address
     log(f"[bold]Nova conexão[/bold] de [cyan]{client_addr}[/cyan]  "
-        f"→ sessão [bold yellow]{session_id}[/bold yellow]")
+        f"→ sessão [bold yellow]{session_id}[/bold yellow]"
+        + ("  [green](live transcription)[/green]" if live_tr else ""))
 
     try:
         async for message in websocket:
 
             # ── Mensagem de texto (JSON) ──────────────────────────────────
             if isinstance(message, str):
-                await handle_json(session, message)
+                await handle_json(session, websocket, message)
 
             # ── Mensagem binária (áudio ou PNG) ───────────────────────────
             elif isinstance(message, bytes):
-                await handle_binary(session, message)
+                await handle_binary(session, websocket, message)
 
     except websockets.exceptions.ConnectionClosed as e:
         log_warn(f"Conexão encerrada abruptamente ({e.code})")
         # Salva o que tiver
-        await finalize_session(session, auto_transcribe=False)
+        await finalize_session(session, websocket, auto_transcribe=False)
 
     finally:
+        # Para transcritor em tempo real
+        if live_tr:
+            live_tr.stop()
+            active_transcribers.pop(websocket, None)
         session.close_audio()
         active_sessions.pop(websocket, None)
         log(f"[dim]Sessão {session_id} finalizada.[/dim]")
 
 
 # ── Handler JSON ──────────────────────────────────────────────────────────────
-async def handle_json(session: Session, raw: str):
+async def handle_json(session: Session, websocket: WebSocketServerProtocol, raw: str):
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -157,6 +176,20 @@ async def handle_json(session: Session, raw: str):
         session.participants = data.get("participants", session.participants)
         log_event("RECORDING_START",
                   f"separate={data.get('separate', False)}")
+
+        # Inicia transcrição em tempo real
+        live_tr = active_transcribers.get(websocket)
+        if live_tr:
+            loop = asyncio.get_event_loop()
+
+            def on_live_segment(seg: LiveSegment):
+                """Callback chamado pela thread de transcrição — agenda envio no event loop."""
+                asyncio.run_coroutine_threadsafe(
+                    _send_live_segment(websocket, seg, session),
+                    loop,
+                )
+
+            live_tr.start(on_segment=on_live_segment)
 
     # ── AUDIO_CHUNK_META ──────────────────────────────────────────────────
     # O próximo binário recebido será o chunk de áudio correspondente.
@@ -191,6 +224,11 @@ async def handle_json(session: Session, raw: str):
         session.record_speaker_change(speaker, data.get("timestamp", 0), elapsed)
         log_event("SPEAKER_CHANGE", f"[bold]{speaker}[/bold] @ {elapsed}s")
 
+        # Atualiza speaker no transcritor em tempo real
+        live_tr = active_transcribers.get(websocket)
+        if live_tr:
+            live_tr.update_speaker(speaker, elapsed)
+
     # ── PARTICIPANTS_UPDATE ───────────────────────────────────────────────
     elif event_type == "PARTICIPANTS_UPDATE":
         session.participants = data.get("participants", {})
@@ -201,19 +239,29 @@ async def handle_json(session: Session, raw: str):
     elif event_type == "RECORDING_STOP":
         duration = data.get("duration", 0)
         log_event("RECORDING_STOP", f"duração: {duration}s")
+
+        # Para transcrição em tempo real
+        live_tr = active_transcribers.get(websocket)
+        if live_tr:
+            live_tr.stop()
+
         session.close_audio()
-        await finalize_session(session, auto_transcribe=cfg.auto_transcribe)
+        await finalize_session(session, websocket, auto_transcribe=cfg.auto_transcribe)
 
 
 # ── Handler Binário ───────────────────────────────────────────────────────────
-async def handle_binary(session: Session, data: bytes):
+async def handle_binary(session: Session, websocket: WebSocketServerProtocol, data: bytes):
     meta = session.pending_meta
     session.pending_meta = None  # consume imediatamente
 
     if meta is None:
-        # Binário inesperado sem metadado — trata como áudio
-        log_warn(f"Binário sem metadado ({len(data)} bytes) — tratado como áudio")
+        # Binário sem metadado — trata como áudio (normal quando extensão envia chunks diretos)
         session.write_audio(data)
+
+        # Alimenta transcritor em tempo real mesmo sem metadado
+        live_tr = active_transcribers.get(websocket)
+        if live_tr:
+            live_tr.feed_audio(data)
         return
 
     meta_type = meta.get("type", "")
@@ -221,6 +269,13 @@ async def handle_binary(session: Session, data: bytes):
     # ── Chunk de áudio ────────────────────────────────────────────────────
     if meta_type == "AUDIO_CHUNK_META":
         session.write_audio(data)
+
+        # Alimenta transcritor em tempo real
+        live_tr = active_transcribers.get(websocket)
+        if live_tr:
+            elapsed = meta.get("elapsedSeconds", 0)
+            speaker = meta.get("speaker")
+            live_tr.feed_audio(data, elapsed, speaker)
 
     # ── Frame PNG de conteúdo compartilhado ───────────────────────────────
     elif meta_type == "CONTENT_FRAME":
@@ -236,8 +291,28 @@ async def handle_binary(session: Session, data: bytes):
 
 
 # ── Finalização da sessão ─────────────────────────────────────────────────────
-async def finalize_session(session: Session, auto_transcribe: bool = True):
-    """Persiste metadados e (opcionalmente) dispara transcrição."""
+async def _send_live_segment(websocket: WebSocketServerProtocol,
+                              seg: LiveSegment, session: Session):
+    """Envia um segmento de transcrição em tempo real de volta ao browser."""
+    try:
+        msg = json.dumps({
+            "type": "LIVE_TRANSCRIPT",
+            "text": seg.text,
+            "start": seg.start,
+            "end": seg.end,
+            "speaker": seg.speaker,
+            "words": seg.words,
+            "timestamp": int(time.time() * 1000),
+        })
+        await websocket.send(msg)
+    except Exception:
+        pass  # conexão pode ter sido fechada
+
+
+async def finalize_session(session: Session,
+                           websocket: Optional[WebSocketServerProtocol] = None,
+                           auto_transcribe: bool = True):
+    """Persiste metadados e (opcionalmente) dispara transcrição final."""
     if session.audio_file:
         session.close_audio()
 
@@ -255,24 +330,27 @@ async def finalize_session(session: Session, auto_transcribe: bool = True):
     else:
         print(json.dumps(summary, indent=2))
 
-    if auto_transcribe and WHISPER_AVAILABLE and summary["audio_size_mb"] > 0:
-        log(f"\n[bold]Iniciando transcrição[/bold] (modelo: [cyan]{cfg.whisper_model}[/cyan])…")
-        # Roda em thread separada para não bloquear o event loop
-        loop = asyncio.get_event_loop()
-        try:
-            transcript = await loop.run_in_executor(
-                None,
-                _transcribe_sync,
-                session.dir,
-            )
-            log_ok(f"Transcrição concluída: {len(transcript['segments'])} segmentos")
-            log_ok(f"Arquivos: {session.dir}/transcript.{{json,txt,srt}}")
-        except Exception as e:
-            log_error(f"Erro na transcrição: {e}")
-    elif not WHISPER_AVAILABLE:
-        log_warn("Whisper não disponível. Instale com: pip install openai-whisper")
-    elif summary["audio_size_mb"] == 0:
+    if not auto_transcribe:
+        return
+    if summary["audio_size_mb"] == 0:
         log_warn("Nenhum áudio gravado — transcrição ignorada")
+        return
+    if not WHISPER_AVAILABLE:
+        log_warn("Whisper não disponível. Instale com: pip install faster-whisper")
+        return
+
+    log(f"\n[bold]Iniciando transcrição[/bold] (modelo: [cyan]{cfg.whisper_model}[/cyan])…")
+    loop = asyncio.get_event_loop()
+    try:
+        transcript = await loop.run_in_executor(
+            None,
+            _transcribe_sync,
+            session.dir,
+        )
+        log_ok(f"Transcrição concluída: {len(transcript['segments'])} segmentos")
+        log_ok(f"Arquivos: {session.dir}/transcript.{{json,txt,srt}}")
+    except Exception as e:
+        log_error(f"Erro na transcrição: {e}")
 
 
 def _transcribe_sync(session_dir: Path) -> dict:

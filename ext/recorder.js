@@ -1,8 +1,12 @@
-// ── Teams Capture Pro – Recorder Window ───────────────────────────────────────
+// ── Tab Capture Pro – Recorder Window ───────────────────────────────────────
 
 // ── Estado ────────────────────────────────────────────────────────────────────
 let isRecording      = false;
 let inCall           = false;
+let isTeamsTab       = false;
+let selectedTabId    = null;
+let selectedTabTitle = '';
+let selectedTabUrl   = '';
 let timerInterval    = null;
 let autoSnapInterval = null;
 let elapsedSeconds   = 0;
@@ -12,6 +16,13 @@ let animFrame        = null;
 let participants     = {};
 let activeSpeaker    = null;
 let callStartTime    = null;
+
+// Content capture
+let contentSharing       = false;
+let contentPresenter     = null;
+let contentCaptureTimer  = null;
+let contentFrameIndex    = 0;
+let lastFrameSize        = 0;
 
 // Media
 let tabRecorder  = null;
@@ -49,12 +60,18 @@ const wsUrlInput      = $('wsUrl');
 const toggleMeta      = $('toggleMeta');
 const wsChunkMsInput  = $('wsChunkMs');
 const toggleSaveLocal = $('toggleSaveLocal');
-const toggleAutoStart = $('toggleAutoStart');
+const toggleAutoStart     = $('toggleAutoStart');
+const toggleContentCapture = $('toggleContentCapture');
+const contentIntervalEl    = $('contentInterval');
+const transcriptList       = $('transcriptList');
 const participantsList    = $('participantsList');
 const participantCountEl  = $('participantCount');
 const currentSpeakerEl    = $('currentSpeaker');
 const timelineList        = $('timelineList');
 const bars                = document.querySelectorAll('#audioViz .bar');
+const tabFavicon          = $('tabFavicon');
+const tabName             = $('tabName');
+const tabBadge            = $('tabBadge');
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(tab => {
@@ -127,6 +144,17 @@ function connectWS() {
       if (isRecording) setTimeout(connectWS, 3000);
     };
 
+    ws.onmessage = (e) => {
+      if (typeof e.data === 'string') {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'LIVE_TRANSCRIPT') {
+            appendTranscript(msg);
+          }
+        } catch (_) {}
+      }
+    };
+
     ws.onerror = (e) => {
       wsDot.className = 'ws-dot error';
       log('WebSocket erro: ' + (e.message || 'conexão falhou'), 'error');
@@ -146,6 +174,33 @@ function disconnectWS() {
   }
 }
 
+// ── Transcrição em tempo real ────────────────────────────────────────────────
+function appendTranscript(msg) {
+  if (!transcriptList) return;
+
+  // Remove placeholder se existir
+  const placeholder = transcriptList.querySelector('.transcript-empty');
+  if (placeholder) placeholder.remove();
+
+  const speaker = msg.speaker || '?';
+  const startSec = msg.start || 0;
+  const text = msg.text || '';
+
+  const li = document.createElement('li');
+  li.className = 'transcript-item';
+  li.innerHTML = `
+    <span class="transcript-time">${formatTime(Math.floor(startSec))}</span>
+    <span class="transcript-speaker">${speaker}</span>
+    <span class="transcript-text">${text}</span>`;
+  transcriptList.appendChild(li);
+
+  // Auto-scroll para o final
+  transcriptList.scrollTop = transcriptList.scrollHeight;
+
+  // Limita a 200 itens
+  while (transcriptList.children.length > 200) transcriptList.removeChild(transcriptList.firstChild);
+}
+
 function sendWsMeta(data) {
   if (!ws || ws.readyState !== WebSocket.OPEN || !toggleMeta.checked) return;
   try { ws.send(JSON.stringify(data)); } catch (_) {}
@@ -159,13 +214,54 @@ function sendWsAudio(arrayBuffer) {
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function setUI(recording) {
   isRecording = recording;
-  btnStart.disabled = recording || !inCall;
+  // Habilita start se tiver uma aba selecionada (não precisa estar em chamada do Teams)
+  const canStart = selectedTabId && !recording;
+  btnStart.disabled = !canStart;
   btnStop.disabled  = !recording;
   btnSnap.disabled  = !recording;
   timerDisplay.classList.toggle('recording', recording);
   bars.forEach(b => b.classList.toggle('active', recording));
-  callPill.textContent  = recording ? '● Gravando' : (inCall ? 'Em chamada' : 'Fora de chamada');
-  callPill.className    = 'status-pill' + (recording ? ' recording' : (inCall ? ' in-call' : ''));
+
+  if (recording) {
+    callPill.textContent = '● Gravando';
+    callPill.className   = 'status-pill recording';
+  } else if (inCall && isTeamsTab) {
+    callPill.textContent = 'Em chamada';
+    callPill.className   = 'status-pill in-call';
+  } else if (selectedTabId) {
+    callPill.textContent = 'Pronto';
+    callPill.className   = 'status-pill ready';
+  } else {
+    callPill.textContent = 'Aguardando';
+    callPill.className   = 'status-pill';
+  }
+}
+
+// Atualiza informações da aba selecionada
+function updateTabInfo(tab) {
+  if (!tab) {
+    tabName.textContent = 'Nenhuma aba selecionada';
+    tabFavicon.style.display = 'none';
+    tabBadge.style.display = 'none';
+    return;
+  }
+
+  selectedTabId = tab.id;
+  selectedTabTitle = tab.title || 'Sem título';
+  selectedTabUrl = tab.url || '';
+  isTeamsTab = tab.isTeams || false;
+
+  tabName.textContent = selectedTabTitle;
+
+  if (tab.favIconUrl) {
+    tabFavicon.src = tab.favIconUrl;
+    tabFavicon.style.display = 'block';
+    tabFavicon.onerror = () => { tabFavicon.style.display = 'none'; };
+  } else {
+    tabFavicon.style.display = 'none';
+  }
+
+  tabBadge.style.display = isTeamsTab ? 'inline' : 'none';
 }
 
 function updateSeparateVisibility() {
@@ -220,16 +316,49 @@ function updateActiveSpeaker(speaker) {
   renderParticipants();
 }
 
-// ── Screenshot ────────────────────────────────────────────────────────────────
+// ── Screenshot (envia ao backend via WS, sem download local) ─────────────────
 function takeScreenshot(label = 'manual') {
-  chrome.runtime.sendMessage({ action: 'takeScreenshot' }, (resp) => {
-    if (resp?.success) {
-      snapCount++;
-      snapCountEl.textContent = snapCount;
-      log(`Screenshot salvo (${label})`, 'success');
-    } else {
-      log('Screenshot falhou: ' + (resp?.error || 'unknown'), 'error');
+  if (!wsConnected || !isRecording) {
+    log('Screenshot requer gravação ativa + WS conectado', 'warn');
+    return;
+  }
+
+  chrome.runtime.sendMessage({ action: 'captureFrame' }, (resp) => {
+    if (!resp?.success || !resp.dataUrl) {
+      log('Screenshot falhou: ' + (resp?.error || 'sem dados'), 'error');
+      return;
     }
+
+    const base64 = resp.dataUrl.split(',')[1];
+    if (!base64) return;
+
+    const binaryStr = atob(base64);
+    const len = binaryStr.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+    sendWsMeta({
+      type: 'CONTENT_FRAME',
+      speaker: activeSpeaker,
+      elapsedSeconds,
+      frameIndex: contentFrameIndex,
+      sizeBytes: len,
+      label,
+      width: 0,
+      height: 0,
+      timestamp: Date.now()
+    });
+
+    try {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(bytes.buffer);
+      }
+    } catch (_) {}
+
+    contentFrameIndex++;
+    snapCount++;
+    snapCountEl.textContent = snapCount;
+    log(`Screenshot enviado ao backend (${label}, ${(len/1024).toFixed(0)}KB)`, 'success');
   });
 }
 
@@ -238,6 +367,85 @@ function startAutoSnap() {
   autoSnapInterval = setInterval(() => takeScreenshot(`auto @${formatTime(elapsedSeconds)}`), secs * 1000);
 }
 function stopAutoSnap() { clearInterval(autoSnapInterval); autoSnapInterval = null; }
+
+// ── Captura automática de conteúdo (frames para o backend) ───────────────────
+function captureAndSendFrame() {
+  if (!wsConnected || !isRecording) return;
+
+  chrome.runtime.sendMessage({ action: 'captureFrame' }, (resp) => {
+    if (!resp?.success || !resp.dataUrl) {
+      log('Frame capture falhou: ' + (resp?.error || 'sem dados'), 'error');
+      return;
+    }
+
+    // Converte dataURL para binário
+    const base64 = resp.dataUrl.split(',')[1];
+    if (!base64) return;
+
+    const binaryStr = atob(base64);
+    const len = binaryStr.length;
+
+    // Detecção de mudança: compara tamanho do frame
+    // Frames idênticos terão tamanhos muito próximos (±1%)
+    const sizeDiff = lastFrameSize > 0 ? Math.abs(len - lastFrameSize) / lastFrameSize : 1;
+    if (sizeDiff < 0.01 && lastFrameSize > 0) {
+      // Frame não mudou — não envia
+      return;
+    }
+    lastFrameSize = len;
+
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+    // Envia metadado JSON primeiro
+    sendWsMeta({
+      type: 'CONTENT_FRAME',
+      speaker: contentPresenter || activeSpeaker,
+      elapsedSeconds,
+      frameIndex: contentFrameIndex,
+      sizeBytes: len,
+      width: 0,
+      height: 0,
+      timestamp: Date.now()
+    });
+
+    // Envia o binário PNG
+    try {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(bytes.buffer);
+      }
+    } catch (_) {}
+
+    contentFrameIndex++;
+    snapCount++;
+    snapCountEl.textContent = snapCount;
+    log(`Frame #${contentFrameIndex} enviado (${(len/1024).toFixed(0)}KB)`, 'success');
+  });
+}
+
+function startContentCapture() {
+  if (contentCaptureTimer) return;
+  if (!toggleContentCapture?.checked) return;
+  if (!isRecording || !wsConnected) return;
+
+  const secs = parseInt(contentIntervalEl?.value, 10) || 5;
+  lastFrameSize = 0;
+  log(`Captura de conteúdo iniciada (a cada ${secs}s)`, 'success');
+  addTimeline('Captura de conteúdo iniciada', contentPresenter || '', 'yellow');
+
+  // Captura imediata + periódica
+  captureAndSendFrame();
+  contentCaptureTimer = setInterval(captureAndSendFrame, secs * 1000);
+}
+
+function stopContentCapture() {
+  if (!contentCaptureTimer) return;
+  clearInterval(contentCaptureTimer);
+  contentCaptureTimer = null;
+  lastFrameSize = 0;
+  log('Captura de conteúdo parada', 'warn');
+  addTimeline('Captura de conteúdo parada', '', 'yellow');
+}
 
 // ── MediaRecorder factory ─────────────────────────────────────────────────────
 function makeRecorder(stream, onChunk, intervalMs) {
@@ -307,12 +515,21 @@ async function startCapture() {
   // Conecta WS antes de iniciar
   if (toggleWS.checked) connectWS();
 
-  chrome.runtime.sendMessage({ action: 'getStreamId' }, async (resp) => {
+  // Usa a aba selecionada ou pede para o background encontrar uma
+  chrome.runtime.sendMessage({ action: 'getStreamId', tabId: selectedTabId }, async (resp) => {
     if (!resp?.success) {
       log('Falhou: ' + (resp?.error || 'unknown'), 'error');
-      btnStart.disabled = false;
+      setUI(false);
       return;
     }
+
+    // Atualiza informações da aba
+    if (resp.tabId) selectedTabId = resp.tabId;
+    if (resp.tabTitle) selectedTabTitle = resp.tabTitle;
+    if (resp.tabUrl) selectedTabUrl = resp.tabUrl;
+    isTeamsTab = resp.isTeams || false;
+    tabName.textContent = selectedTabTitle;
+    tabBadge.style.display = isTeamsTab ? 'inline' : 'none';
 
     try {
       wsChunkMs = parseInt(wsChunkMsInput.value, 10) || 250;
@@ -323,7 +540,7 @@ async function startCapture() {
         data.arrayBuffer().then(buf => sendWsAudio(buf));
       };
 
-      // Tab stream
+      // Tab stream - captura áudio e vídeo
       tabStream = await navigator.mediaDevices.getUserMedia({
         video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: resp.streamId } },
         audio: captureAudio
@@ -331,7 +548,7 @@ async function startCapture() {
           : false
       });
 
-      // Mic stream
+      // Mic stream - captura ANTES de criar o AudioContext
       if (captureAudio) {
         try {
           micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -357,37 +574,115 @@ async function startCapture() {
         }
         tabRecorder.start(wsChunkMs);
 
+        // Reproduz localmente no modo separado
+        if (captureAudio && tabStream.getAudioTracks().length > 0) {
+          const audioEl = document.createElement('audio');
+          audioEl.srcObject = new MediaStream(tabStream.getAudioTracks());
+          audioEl.autoplay = true;
+          audioEl.style.display = 'none';
+          document.body.appendChild(audioEl);
+          window._playbackAudio = audioEl;
+          log('Áudio da aba sendo reproduzido localmente ✓', 'success');
+        }
+
       } else {
         // ── MODO MIXADO (padrão) ──────────────────────────────────────────
         let streamToRecord = tabStream;
 
-        if (captureAudio && micStream) {
-          audioContext = new AudioContext();
-          const dest    = audioContext.createMediaStreamDestination();
-          const tabSrc  = audioContext.createMediaStreamSource(tabStream);
-          const micSrc  = audioContext.createMediaStreamSource(micStream);
-          const micGain = audioContext.createGain();
-          micGain.gain.value = 1.2;
-          tabSrc.connect(dest);
-          micSrc.connect(micGain);
-          micGain.connect(dest);
+        if (captureAudio) {
+          // Cria AudioContext para mixar áudio da aba + microfone
+          audioContext = new AudioContext({ sampleRate: 48000 });
+
+          // Se o AudioContext estiver suspenso, precisamos resumí-lo
+          if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+            log('AudioContext resumido', 'success');
+          }
+
+          // Cria destino para o stream mixado
+          const dest = audioContext.createMediaStreamDestination();
+
+          // ── Fonte do áudio da aba ──
+          const tabAudioTracks = tabStream.getAudioTracks();
+          if (tabAudioTracks.length > 0) {
+            const tabAudioStream = new MediaStream(tabAudioTracks);
+            const tabSrc = audioContext.createMediaStreamSource(tabAudioStream);
+
+            // Ganho para o áudio da aba
+            const tabGain = audioContext.createGain();
+            tabGain.gain.value = 1.0;
+
+            tabSrc.connect(tabGain);
+            tabGain.connect(dest);
+            log('Áudio da aba conectado ao mixer ✓', 'success');
+          }
+
+          // ── Fonte do microfone ──
+          if (micStream) {
+            const micAudioStream = new MediaStream(micStream.getAudioTracks());
+            const micSrc = audioContext.createMediaStreamSource(micAudioStream);
+
+            // Ganho para o microfone (um pouco mais alto)
+            const micGain = audioContext.createGain();
+            micGain.gain.value = 1.5;
+
+            micSrc.connect(micGain);
+            micGain.connect(dest);
+            log('Microfone conectado ao mixer (ganho 1.5x) ✓', 'success');
+          }
+
+          // ── Reprodução local: APENAS o áudio da aba (sem microfone) ──
+          // Você não quer ouvir sua própria voz
+          if (tabAudioTracks.length > 0) {
+            const audioEl = document.createElement('audio');
+            audioEl.srcObject = new MediaStream(tabAudioTracks);
+            audioEl.autoplay = true;
+            audioEl.style.display = 'none';
+            document.body.appendChild(audioEl);
+            window._playbackAudio = audioEl;
+            log('Áudio da aba sendo reproduzido localmente ✓', 'success');
+          }
+
+          // Combina vídeo original com áudio mixado (para gravação/envio)
           const videoTrack = tabStream.getVideoTracks()[0];
-          const mixedAudio = dest.stream.getAudioTracks()[0];
-          streamToRecord = new MediaStream(videoTrack ? [videoTrack, mixedAudio] : [mixedAudio]);
-          log('Misturando aba + mic ✓', 'success');
+          const mixedAudioTrack = dest.stream.getAudioTracks()[0];
+
+          if (videoTrack && mixedAudioTrack) {
+            streamToRecord = new MediaStream([videoTrack, mixedAudioTrack]);
+          } else if (mixedAudioTrack) {
+            streamToRecord = new MediaStream([mixedAudioTrack]);
+          }
+
+          log('AudioContext: ' + audioContext.state + ', sampleRate: ' + audioContext.sampleRate + ', tracks: ' + streamToRecord.getTracks().length, 'success');
+        } else {
+          // Sem áudio - apenas vídeo
+          if (tabStream.getAudioTracks().length > 0) {
+            const audioEl = document.createElement('audio');
+            audioEl.srcObject = new MediaStream(tabStream.getAudioTracks());
+            audioEl.autoplay = true;
+            audioEl.style.display = 'none';
+            document.body.appendChild(audioEl);
+            window._playbackAudio = audioEl;
+          }
         }
 
         const mix = makeRecorder(streamToRecord, onTabChunk, wsChunkMs);
         tabRecorder = mix.recorder;
         tabRecorder.onstop = () => saveFile(mix.chunks, mix.mimeType, 'recording');
         tabRecorder.start(wsChunkMs);
+
+        log('Gravação iniciada: ' + mix.mimeType + ', áudio tracks: ' + streamToRecord.getAudioTracks().length, 'success');
       }
 
-      addTimeline('Gravação iniciada', Object.values(participants).join(', ') || 'nenhum participante', 'red');
+      const participantsList = isTeamsTab ? Object.values(participants).join(', ') || 'nenhum participante' : selectedTabTitle;
+      addTimeline('Gravação iniciada', participantsList, 'red');
 
       if (toggleMeta.checked) {
         sendWsMeta({
           type: 'RECORDING_START',
+          tabTitle: selectedTabTitle,
+          tabUrl: selectedTabUrl,
+          isTeams: isTeamsTab,
           participants,
           activeSpeaker,
           separate,
@@ -402,7 +697,7 @@ async function startCapture() {
 
     } catch (err) {
       log('Erro de stream: ' + err.message, 'error');
-      btnStart.disabled = false;
+      setUI(false);
     }
   });
 }
@@ -421,10 +716,20 @@ function stopCapture() {
   tabRecorder = null;
   micRecorder = null;
 
+  // Para o elemento de áudio de reprodução local
+  if (window._playbackAudio) {
+    window._playbackAudio.pause();
+    window._playbackAudio.srcObject = null;
+    window._playbackAudio.remove();
+    window._playbackAudio = null;
+  }
+
   tabStream?.getTracks().forEach(t => t.stop());
   micStream?.getTracks().forEach(t => t.stop());
   audioContext?.close();
   tabStream = micStream = audioContext = null;
+
+  stopContentCapture();
 
   if (toggleMeta.checked) {
     sendWsMeta({ type: 'RECORDING_STOP', duration: elapsedSeconds, timestamp: Date.now() });
@@ -450,8 +755,10 @@ chrome.runtime.onMessage.addListener((msg) => {
     case 'CALL_STARTED':
       inCall = true;
       callStartTime = msg.timestamp;
-      callPill.textContent = 'Em chamada';
-      callPill.className   = 'status-pill in-call';
+      if (isTeamsTab) {
+        callPill.textContent = 'Em chamada';
+        callPill.className   = 'status-pill in-call';
+      }
       btnStart.disabled    = isRecording;
       addTimeline('Chamada iniciada', '', 'green');
       log('Chamada detectada no Teams', 'success');
@@ -464,9 +771,9 @@ chrome.runtime.onMessage.addListener((msg) => {
 
     case 'CALL_ENDED':
       inCall = false;
-      callPill.textContent = 'Fora de chamada';
-      callPill.className   = 'status-pill';
-      btnStart.disabled    = true;
+      callPill.textContent = selectedTabId ? 'Pronto' : 'Aguardando';
+      callPill.className   = selectedTabId ? 'status-pill ready' : 'status-pill';
+      btnStart.disabled    = !selectedTabId || isRecording;
       addTimeline('Chamada encerrada', '', 'red');
       log('Chamada encerrada', 'warn');
       if (isRecording) stopCapture();
@@ -504,6 +811,28 @@ chrome.runtime.onMessage.addListener((msg) => {
         }
       }
       break;
+
+    case 'CONTENT_SHARING_START':
+      contentSharing = true;
+      contentPresenter = msg.presenter;
+      addTimeline('Compartilhamento iniciado', msg.presenter || '', 'yellow');
+      log(`Conteúdo sendo compartilhado${msg.presenter ? ' por ' + msg.presenter : ''}`, 'success');
+      if (isRecording && wsConnected) startContentCapture();
+      break;
+
+    case 'CONTENT_SHARING_STOP':
+      contentSharing = false;
+      contentPresenter = null;
+      addTimeline('Compartilhamento encerrado', '', 'yellow');
+      log('Compartilhamento de conteúdo encerrado', 'warn');
+      stopContentCapture();
+      break;
+
+    case 'CONTENT_SHARING_PRESENTER_CHANGE':
+      contentPresenter = msg.presenter;
+      addTimeline('Apresentador mudou', msg.presenter || '', 'yellow');
+      log(`Novo apresentador: ${msg.presenter || '?'}`);
+      break;
   }
 });
 
@@ -518,53 +847,104 @@ toggleAudio.addEventListener('change', () => {
 });
 
 const saveSettings = () => chrome.storage.local.set({
-  captureAudio:  toggleAudio.checked,
-  separate:      toggleSeparate.checked,
-  autoSnap:      toggleAutoSnap.checked,
-  snapInterval:  snapIntervalEl.value,
-  wsEnabled:     toggleWS.checked,
-  wsUrl:         wsUrlInput.value,
-  wsMeta:        toggleMeta.checked,
-  wsChunkMs:     wsChunkMsInput.value,
-  saveLocal:     toggleSaveLocal.checked,
-  autoStart:     toggleAutoStart.checked,
+  captureAudio:    toggleAudio.checked,
+  separate:        toggleSeparate.checked,
+  autoSnap:        toggleAutoSnap.checked,
+  snapInterval:    snapIntervalEl.value,
+  wsEnabled:       toggleWS.checked,
+  wsUrl:           wsUrlInput.value,
+  wsMeta:          toggleMeta.checked,
+  wsChunkMs:       wsChunkMsInput.value,
+  saveLocal:       toggleSaveLocal.checked,
+  autoStart:       toggleAutoStart.checked,
+  contentCapture:  toggleContentCapture?.checked || false,
+  contentInterval: contentIntervalEl?.value || '5',
 });
 
 [toggleSeparate, toggleAutoSnap, toggleWS, toggleMeta,
- toggleSaveLocal, toggleAutoStart].forEach(el => el.addEventListener('change', saveSettings));
-[snapIntervalEl, wsUrlInput, wsChunkMsInput].forEach(el => el.addEventListener('change', saveSettings));
+ toggleSaveLocal, toggleAutoStart, toggleContentCapture].filter(Boolean).forEach(el => el.addEventListener('change', saveSettings));
+[snapIntervalEl, wsUrlInput, wsChunkMsInput, contentIntervalEl].filter(Boolean).forEach(el => el.addEventListener('change', saveSettings));
+
+// Auto-snap: iniciar/parar imediatamente ao alternar durante gravação
+toggleAutoSnap.addEventListener('change', () => {
+  if (!isRecording) return;
+  if (toggleAutoSnap.checked) { startAutoSnap(); }
+  else { stopAutoSnap(); }
+});
+snapIntervalEl.addEventListener('change', () => {
+  if (!isRecording || !toggleAutoSnap.checked) return;
+  stopAutoSnap();
+  startAutoSnap();
+});
+
+// Captura de conteúdo: iniciar/parar imediatamente ao alternar durante gravação
+if (toggleContentCapture) {
+  toggleContentCapture.addEventListener('change', () => {
+    if (!isRecording) return;
+    if (toggleContentCapture.checked) { startContentCapture(); }
+    else { stopContentCapture(); }
+  });
+}
+if (contentIntervalEl) {
+  contentIntervalEl.addEventListener('change', () => {
+    if (!isRecording || !toggleContentCapture?.checked) return;
+    stopContentCapture();
+    startContentCapture();
+  });
+}
 
 // ── Restaurar configurações ───────────────────────────────────────────────────
 chrome.storage.local.get([
   'captureAudio','separate','autoSnap','snapInterval',
-  'wsEnabled','wsUrl','wsMeta','wsChunkMs','saveLocal','autoStart'
+  'wsEnabled','wsUrl','wsMeta','wsChunkMs','saveLocal','autoStart',
+  'contentCapture','contentInterval'
 ], (d) => {
-  if (d.captureAudio  !== undefined) toggleAudio.checked      = d.captureAudio;
-  if (d.separate      !== undefined) toggleSeparate.checked   = d.separate;
-  if (d.autoSnap      !== undefined) toggleAutoSnap.checked   = d.autoSnap;
-  if (d.snapInterval  !== undefined) snapIntervalEl.value     = d.snapInterval;
-  if (d.wsEnabled     !== undefined) toggleWS.checked         = d.wsEnabled;
-  if (d.wsUrl         !== undefined) wsUrlInput.value         = d.wsUrl;
-  if (d.wsMeta        !== undefined) toggleMeta.checked       = d.wsMeta;
-  if (d.wsChunkMs     !== undefined) wsChunkMsInput.value     = d.wsChunkMs;
-  if (d.saveLocal     !== undefined) toggleSaveLocal.checked  = d.saveLocal;
-  if (d.autoStart     !== undefined) toggleAutoStart.checked  = d.autoStart;
+  if (d.captureAudio    !== undefined) toggleAudio.checked      = d.captureAudio;
+  if (d.separate        !== undefined) toggleSeparate.checked   = d.separate;
+  if (d.autoSnap        !== undefined) toggleAutoSnap.checked   = d.autoSnap;
+  if (d.snapInterval    !== undefined) snapIntervalEl.value     = d.snapInterval;
+  if (d.wsEnabled       !== undefined) toggleWS.checked         = d.wsEnabled;
+  if (d.wsUrl           !== undefined) wsUrlInput.value         = d.wsUrl;
+  if (d.wsMeta          !== undefined) toggleMeta.checked       = d.wsMeta;
+  if (d.wsChunkMs       !== undefined) wsChunkMsInput.value     = d.wsChunkMs;
+  if (d.saveLocal       !== undefined) toggleSaveLocal.checked  = d.saveLocal;
+  if (d.autoStart       !== undefined) toggleAutoStart.checked  = d.autoStart;
+  if (d.contentCapture  !== undefined && toggleContentCapture) toggleContentCapture.checked = d.contentCapture;
+  if (d.contentInterval !== undefined && contentIntervalEl) contentIntervalEl.value = d.contentInterval;
   updateSeparateVisibility();
 });
 
 // Busca estado atual da chamada ao abrir a janela
 chrome.runtime.sendMessage({ action: 'getCallState' }, (resp) => {
+  // Carrega aba selecionada
+  if (resp?.selectedTabId) {
+    selectedTabId = resp.selectedTabId;
+    // Busca informações da aba
+    chrome.runtime.sendMessage({ action: 'listTabs' }, (tabsResp) => {
+      if (tabsResp?.success) {
+        const tab = tabsResp.tabs.find(t => t.id === selectedTabId);
+        if (tab) {
+          updateTabInfo(tab);
+          log(`Aba selecionada: ${tab.title}`, 'success');
+        }
+      }
+    });
+  }
+
+  // Carrega estado da chamada do Teams
   if (resp?.callState?.inCall) {
     inCall = true;
     callStartTime = resp.callState.startedAt;
     participants  = resp.callState.participants || {};
     activeSpeaker = resp.callState.activeSpeaker;
+    isTeamsTab = true;
     callPill.textContent = 'Em chamada';
     callPill.className   = 'status-pill in-call';
-    btnStart.disabled    = false;
     renderParticipants();
     log('Retomando chamada em andamento', 'success');
   }
+
+  setUI(false);
 });
 
 // Init

@@ -1,20 +1,19 @@
 {
   "manifest_version": 3,
-  "name": "Teams Capture Pro",
-  "version": "3.0.0",
-  "description": "Captura chamadas do Teams: participantes, locutor ativo e stream de áudio para backend.",
+  "name": "Tab Capture Pro",
+  "version": "4.0.0",
+  "description": "Captura qualquer aba do navegador: áudio, vídeo e screenshots. Com recursos especiais para Teams.",
   "permissions": [
     "tabCapture",
     "activeTab",
     "tabs",
     "downloads",
     "storage",
-    "scripting"
+    "scripting",
+    "desktopCapture"
   ],
   "host_permissions": [
-    "https://teams.microsoft.com/*",
-    "https://teams.live.com/*",
-    "https://teams.microsoft.us/*"
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"

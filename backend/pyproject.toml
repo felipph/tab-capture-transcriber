@@ -13,4 +13,5 @@ dependencies = [
     "aiofiles>=23.0.0",
     "Pillow>=10.0.0",
     #"torch>=2.0.0"
+    "faster-whisper>=1.2.1",
 ]
