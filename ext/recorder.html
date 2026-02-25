@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Teams Capture Pro</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+    :root {
+      --bg:#0a0a0f; --surface:#13131c; --surface2:#1a1a26;
+      --border:#1e1e2e; --accent:#5865f2; --red:#eb4b4b;
+      --green:#3ecf8e; --yellow:#f5a623; --text:#e8e8f0; --muted:#6b6b8a;
+      --mono:'IBM Plex Mono',monospace; --sans:'IBM Plex Sans',sans-serif;
+    }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { width:420px; background:var(--bg); color:var(--text);
+           font-family:var(--sans); font-size:13px; overflow:hidden; }
+
+    /* Header */
+    .header { background:var(--surface); border-bottom:1px solid var(--border);
+              padding:12px 16px; display:flex; align-items:center; gap:10px; }
+    .logo { width:28px;height:28px; background:linear-gradient(135deg,var(--accent),#8b5cf6);
+            border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:13px; }
+    .header h1 { font-size:13px; font-weight:600; flex:1; }
+    .status-pill { font-family:var(--mono); font-size:9px; font-weight:600;
+                   letter-spacing:.08em; padding:3px 8px; border-radius:10px;
+                   text-transform:uppercase; background:var(--border); color:var(--muted); }
+    .status-pill.in-call { background:#1a2e1a; color:var(--green); border:1px solid var(--green); }
+    .status-pill.recording { background:#2e1a1a; color:var(--red); border:1px solid var(--red);
+                              animation:pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
+
+    /* Timer */
+    .timer-bar { background:var(--surface); border-bottom:1px solid var(--border);
+                 padding:6px 16px; display:flex; align-items:center; gap:8px; }
+    #timerDisplay { font-family:var(--mono); font-size:18px; font-weight:600;
+                    color:var(--muted); letter-spacing:.05em; flex:1; }
+    #timerDisplay.recording { color:var(--red); }
+    .viz { display:flex; align-items:flex-end; gap:2px; height:18px; }
+    .bar { width:3px; background:var(--border); border-radius:2px; transition:height .1s; }
+    .bar.active { background:var(--green); }
+    .ws-dot { width:8px;height:8px; border-radius:50%; background:var(--muted); margin-left:4px;
+              transition:all .3s; flex-shrink:0; }
+    .ws-dot.connected { background:var(--green); box-shadow:0 0 5px var(--green); }
+    .ws-dot.error { background:var(--red); }
+    .ws-label { font-family:var(--mono); font-size:9px; color:var(--muted); }
+
+    /* Tabs */
+    .tabs { display:flex; background:var(--surface); border-bottom:1px solid var(--border); }
+    .tab { flex:1; padding:8px; font-size:11px; font-weight:500; text-align:center;
+           cursor:pointer; border-bottom:2px solid transparent; color:var(--muted);
+           transition:all .15s; }
+    .tab.active { color:var(--text); border-bottom-color:var(--accent); }
+    .tab:hover { color:var(--text); }
+
+    /* Tab panels */
+    .panel { display:none; }
+    .panel.active { display:block; }
+
+    /* Controls panel */
+    .section { padding:12px 16px; border-bottom:1px solid var(--border); }
+    .section-label { font-family:var(--mono); font-size:9px; font-weight:600;
+                     letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin-bottom:8px; }
+    .btn-row { display:flex; gap:8px; }
+    .btn { flex:1; padding:8px 10px; border:1px solid var(--border); border-radius:6px;
+           background:var(--surface); color:var(--text); font-family:var(--sans);
+           font-size:12px; font-weight:500; cursor:pointer;
+           display:flex; align-items:center; justify-content:center; gap:5px;
+           transition:all .15s; }
+    .btn:hover  { background:var(--border); }
+    .btn:active { transform:scale(.97); }
+    .btn:disabled { opacity:.3; cursor:not-allowed; }
+    .btn-primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .btn-primary:hover { background:#6c75f5; }
+    .btn-danger  { background:var(--red); border-color:var(--red); color:#fff; }
+    .btn-danger:hover  { background:#f05d5d; }
+    .btn-green   { background:var(--green); border-color:var(--green); color:#0a0a0f; }
+    .btn-green:hover   { background:#4fd99e; }
+
+    /* Toggle */
+    .toggle-row { display:flex; align-items:center; justify-content:space-between; padding:5px 0; }
+    .toggle-label { font-size:12px; color:var(--text); display:flex; align-items:center; gap:6px; }
+    .toggle-label small { color:var(--muted); font-size:10px; }
+    .toggle { position:relative; width:34px; height:18px; }
+    .toggle input { opacity:0; width:0; height:0; }
+    .toggle-slider { position:absolute; inset:0; background:var(--border);
+                     border-radius:9px; cursor:pointer; transition:.2s; }
+    .toggle-slider::before { content:''; position:absolute; width:12px; height:12px;
+                              left:3px; top:3px; background:var(--muted); border-radius:50%; transition:.2s; }
+    .toggle input:checked + .toggle-slider { background:var(--accent); }
+    .toggle input:checked + .toggle-slider::before { transform:translateX(16px); background:#fff; }
+
+    .input-row { display:flex; align-items:center; gap:8px; margin-top:4px; }
+    .input-row label { font-size:11px; color:var(--muted); flex:1; }
+    .input-row input[type=number] { width:60px; padding:4px 8px; background:var(--bg);
+                       border:1px solid var(--border); border-radius:4px;
+                       color:var(--text); font-family:var(--mono); font-size:12px; text-align:right; }
+    .input-row input[type=number]:focus { outline:none; border-color:var(--accent); }
+    .input-wide { width:100%; padding:6px 10px; background:var(--bg);
+                  border:1px solid var(--border); border-radius:4px;
+                  color:var(--text); font-family:var(--mono); font-size:11px; }
+    .input-wide:focus { outline:none; border-color:var(--accent); }
+    .input-wide::placeholder { color:var(--muted); }
+
+    /* Participants panel */
+    .participants-panel { padding:0; }
+    .call-info-bar { padding:10px 16px; background:var(--surface2);
+                     border-bottom:1px solid var(--border);
+                     font-size:11px; color:var(--muted); display:flex; gap:12px; }
+    .call-info-bar span strong { color:var(--text); }
+    #participantsList { list-style:none; max-height:220px; overflow-y:auto; }
+    #participantsList::-webkit-scrollbar { width:4px; }
+    #participantsList::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+    .participant-item { padding:8px 16px; border-bottom:1px solid var(--border);
+                        display:flex; align-items:center; gap:10px; transition:background .2s; }
+    .participant-item:hover { background:var(--surface2); }
+    .participant-avatar { width:28px; height:28px; border-radius:50%;
+                          background:var(--border); display:flex; align-items:center;
+                          justify-content:center; font-size:11px; font-weight:600;
+                          color:var(--text); flex-shrink:0; }
+    .participant-name { flex:1; font-size:12px; }
+    .participant-badge { font-family:var(--mono); font-size:9px; padding:2px 6px;
+                         border-radius:4px; font-weight:600; }
+    .badge-speaking { background:#1a2e1a; color:var(--green); border:1px solid var(--green); }
+    .badge-muted    { background:#2a1a1a; color:var(--muted); }
+    .no-participants { padding:20px 16px; text-align:center; color:var(--muted); font-size:12px; }
+
+    /* Timeline panel */
+    .timeline-panel { padding:0; }
+    #timelineList { list-style:none; max-height:280px; overflow-y:auto; padding:0; }
+    #timelineList::-webkit-scrollbar { width:4px; }
+    #timelineList::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+    .tl-item { padding:6px 16px; border-bottom:1px solid var(--border);
+               display:flex; align-items:flex-start; gap:10px; }
+    .tl-time  { font-family:var(--mono); font-size:9px; color:var(--accent);
+                flex-shrink:0; margin-top:1px; min-width:56px; }
+    .tl-event { font-size:11px; color:var(--text); line-height:1.4; }
+    .tl-event .tl-sub { color:var(--muted); font-size:10px; margin-top:1px; }
+    .tl-dot { width:6px;height:6px; border-radius:50%; margin-top:4px;
+              flex-shrink:0; background:var(--muted); }
+    .tl-dot.green  { background:var(--green); }
+    .tl-dot.yellow { background:var(--yellow); }
+    .tl-dot.red    { background:var(--red); }
+    .tl-dot.blue   { background:var(--accent); }
+
+    /* Log */
+    #logList { max-height:90px; overflow-y:auto; list-style:none; }
+    #logList::-webkit-scrollbar { width:4px; }
+    #logList::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+    #logList li { font-family:var(--mono); font-size:10px; color:var(--muted);
+                  padding:2px 0; border-bottom:1px solid #1a1a28;
+                  display:flex; gap:8px; }
+    #logList li:last-child { border-bottom:none; }
+    .log-time { color:var(--accent); flex-shrink:0; }
+    .log-msg  { color:var(--text); }
+    .log-success .log-msg { color:var(--green); }
+    .log-error   .log-msg { color:var(--red); }
+    .log-warn    .log-msg { color:var(--yellow); }
+
+    /* Footer */
+    .footer { padding:6px 16px; display:flex; align-items:center; justify-content:space-between; }
+    .counter { font-family:var(--mono); font-size:10px; color:var(--muted); }
+    .counter strong { color:var(--text); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">◉</div>
+    <h1>Teams Capture Pro</h1>
+    <span class="status-pill" id="callPill">Fora de chamada</span>
+  </div>
+
+  <div class="timer-bar">
+    <span id="timerDisplay">00:00:00</span>
+    <div class="viz" id="audioViz">
+      <div class="bar" style="height:4px"></div>
+      <div class="bar" style="height:6px"></div>
+      <div class="bar" style="height:4px"></div>
+      <div class="bar" style="height:8px"></div>
+      <div class="bar" style="height:4px"></div>
+    </div>
+    <span class="ws-label">WS</span>
+    <div class="ws-dot" id="wsDot" title="WebSocket desconectado"></div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="controls">Controles</div>
+    <div class="tab" data-tab="participants">Participantes</div>
+    <div class="tab" data-tab="timeline">Linha do tempo</div>
+    <div class="tab" data-tab="settings">Config</div>
+  </div>
+
+  <!-- CONTROLES -->
+  <div class="panel active" id="tab-controls">
+    <div class="section">
+      <div class="section-label">Gravação</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btnStart">▶ Iniciar</button>
+        <button class="btn btn-danger"  id="btnStop"  disabled>■ Parar</button>
+        <button class="btn btn-green"   id="btnSnap"  disabled>📷 Print</button>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-label">Modo de áudio</div>
+      <div class="toggle-row">
+        <span class="toggle-label">🎙 Capturar mic + aba</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggleAudio" checked>
+          <div class="toggle-slider"></div>
+        </label>
+      </div>
+      <div class="toggle-row" id="separateRow">
+        <span class="toggle-label">🗂 Salvar faixas separadas <small>aba + mic</small></span>
+        <label class="toggle">
+          <input type="checkbox" id="toggleSeparate">
+          <div class="toggle-slider"></div>
+        </label>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label">📷 Auto-screenshot <small>temporizado</small></span>
+        <label class="toggle">
+          <input type="checkbox" id="toggleAutoSnap">
+          <div class="toggle-slider"></div>
+        </label>
+      </div>
+      <div class="input-row">
+        <label>Intervalo (segundos)</label>
+        <input type="number" id="snapInterval" value="30" min="5" max="600">
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-label">Log</div>
+      <ul id="logList">
+        <li><span class="log-time">--:--:--</span><span class="log-msg">Aguardando chamada do Teams...</span></li>
+      </ul>
+    </div>
+    <div class="footer">
+      <span class="counter">Prints: <strong id="snapCount">0</strong></span>
+      <span class="counter">Gravações: <strong id="recCount">0</strong></span>
+    </div>
+  </div>
+
+  <!-- PARTICIPANTES -->
+  <div class="panel" id="tab-participants">
+    <div class="call-info-bar">
+      <span>Participantes: <strong id="participantCount">0</strong></span>
+      <span>Falando: <strong id="currentSpeaker">—</strong></span>
+    </div>
+    <ul id="participantsList">
+      <li class="no-participants">Nenhuma chamada detectada.</li>
+    </ul>
+  </div>
+
+  <!-- TIMELINE -->
+  <div class="panel" id="tab-timeline">
+    <ul id="timelineList">
+      <li class="tl-item">
+        <span class="tl-time">--:--:--</span>
+        <div class="tl-dot"></div>
+        <div class="tl-event">Aguardando eventos...</div>
+      </li>
+    </ul>
+  </div>
+
+  <!-- CONFIGURAÇÕES -->
+  <div class="panel" id="tab-settings">
+    <div class="section">
+      <div class="section-label">WebSocket Backend</div>
+      <div class="toggle-row">
+        <span class="toggle-label">⚡ Enviar áudio para backend</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggleWS">
+          <div class="toggle-slider"></div>
+        </label>
+      </div>
+      <div class="input-row" style="margin-top:8px; display:flex; flex-direction:column; gap:6px; align-items:stretch;">
+        <label style="font-size:11px; color:var(--muted);">URL do WebSocket</label>
+        <input type="text" class="input-wide" id="wsUrl"
+               placeholder="ws://localhost:8765" value="ws://localhost:8765">
+      </div>
+      <div class="toggle-row" style="margin-top:6px;">
+        <span class="toggle-label">📋 Enviar metadados <small>participantes, locutor</small></span>
+        <label class="toggle">
+          <input type="checkbox" id="toggleMeta" checked>
+          <div class="toggle-slider"></div>
+        </label>
+      </div>
+      <div class="input-row" style="margin-top:4px;">
+        <label>Chunk de áudio (ms)</label>
+        <input type="number" id="wsChunkMs" value="250" min="100" max="2000">
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-label">Gravação local</div>
+      <div class="toggle-row">
+        <span class="toggle-label">💾 Salvar localmente também</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggleSaveLocal" checked>
+          <div class="toggle-slider"></div>
+        </label>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-label">Automação</div>
+      <div class="toggle-row">
+        <span class="toggle-label">🤖 Iniciar automaticamente ao entrar na chamada</span>
+        <label class="toggle">
+          <input type="checkbox" id="toggleAutoStart">
+          <div class="toggle-slider"></div>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <script src="recorder.js"></script>
+</body>
+</html>

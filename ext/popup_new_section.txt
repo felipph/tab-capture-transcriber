@@ -1,0 +1,38 @@
+// ── Recording ────────────────────────────────────────────────────────────────
+async function startCapture() {
+  const captureAudio = toggleAudio.checked;
+
+  // Offscreen documents cannot trigger browser permission prompts.
+  // Request mic access HERE in the popup (a visible context) first.
+  // Once granted, the offscreen doc's getUserMedia call will be auto-approved.
+  if (captureAudio) {
+    try {
+      log('Requesting mic permission…', '');
+      const micTest = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      micTest.getTracks().forEach(t => t.stop()); // release immediately — offscreen will re-acquire
+      log('Mic permission granted', 'success');
+    } catch (err) {
+      log('Mic denied — tab audio only (' + err.message + ')', 'error');
+      // Continue anyway; offscreen.js falls back to tab-only audio
+    }
+  }
+
+  chrome.runtime.sendMessage(
+    { action: 'startCapture', captureAudio },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        log('Error: ' + chrome.runtime.lastError.message, 'error');
+        return;
+      }
+      if (response && response.success) {
+        setRecordingUI(true);
+        startTimer();
+        animateBars();
+        log('Capture started' + (captureAudio ? ' (audio+video)' : ' (video only)'), 'success');
+        if (toggleAutoSnap.checked) startAutoSnap();
+      } else {
+        log('Failed to start: ' + (response?.error || 'unknown'), 'error');
+      }
+    }
+  );
+}
