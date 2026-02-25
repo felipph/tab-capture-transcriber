@@ -25,6 +25,7 @@ import datetime
 import signal
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -64,6 +65,8 @@ cfg = Config()
 active_sessions: dict[WebSocketServerProtocol, Session] = {}
 # Transcrição em tempo real: websocket → LiveTranscriber
 active_transcribers: dict[WebSocketServerProtocol, LiveTranscriber] = {}
+# Pool de processo dedicado para transcrição (1 worker — evita contenção de GPU)
+transcription_pool: ProcessPoolExecutor = None
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -110,7 +113,7 @@ def log_event(event: str, detail: str = ""):
 async def handle_client(websocket: WebSocketServerProtocol):
     session_id = new_session_id()
     session    = Session.create(session_id)
-    session.open_audio()
+    await session.open_audio()
     active_sessions[websocket] = session
 
     # Cria transcritor em tempo real se faster-whisper estiver disponível
@@ -149,7 +152,7 @@ async def handle_client(websocket: WebSocketServerProtocol):
         if live_tr:
             live_tr.stop()
             active_transcribers.pop(websocket, None)
-        session.close_audio()
+        await session.close_audio()
         active_sessions.pop(websocket, None)
         log(f"[dim]Sessão {session_id} finalizada.[/dim]")
 
@@ -220,9 +223,11 @@ async def handle_json(session: Session, websocket: WebSocketServerProtocol, raw:
     # ── SPEAKER_CHANGE ────────────────────────────────────────────────────
     elif event_type == "SPEAKER_CHANGE":
         speaker = data.get("speaker")
+        speaker_email = data.get("speakerEmail")
         elapsed = data.get("elapsedSeconds", 0)
         session.record_speaker_change(speaker, data.get("timestamp", 0), elapsed)
-        log_event("SPEAKER_CHANGE", f"[bold]{speaker}[/bold] @ {elapsed}s")
+        email_str = f" ({speaker_email})" if speaker_email else ""
+        log_event("SPEAKER_CHANGE", f"[bold]{speaker}[/bold]{email_str} @ {elapsed}s")
 
         # Atualiza speaker no transcritor em tempo real
         live_tr = active_transcribers.get(websocket)
@@ -245,7 +250,7 @@ async def handle_json(session: Session, websocket: WebSocketServerProtocol, raw:
         if live_tr:
             live_tr.stop()
 
-        session.close_audio()
+        await session.close_audio()
         await finalize_session(session, websocket, auto_transcribe=cfg.auto_transcribe)
 
 
@@ -256,7 +261,7 @@ async def handle_binary(session: Session, websocket: WebSocketServerProtocol, da
 
     if meta is None:
         # Binário sem metadado — trata como áudio (normal quando extensão envia chunks diretos)
-        session.write_audio(data)
+        await session.write_audio(data)
 
         # Alimenta transcritor em tempo real mesmo sem metadado
         live_tr = active_transcribers.get(websocket)
@@ -268,7 +273,7 @@ async def handle_binary(session: Session, websocket: WebSocketServerProtocol, da
 
     # ── Chunk de áudio ────────────────────────────────────────────────────
     if meta_type == "AUDIO_CHUNK_META":
-        session.write_audio(data)
+        await session.write_audio(data)
 
         # Alimenta transcritor em tempo real
         live_tr = active_transcribers.get(websocket)
@@ -281,13 +286,13 @@ async def handle_binary(session: Session, websocket: WebSocketServerProtocol, da
     elif meta_type == "CONTENT_FRAME":
         speaker = meta.get("speaker")
         elapsed = meta.get("elapsedSeconds", 0)
-        path    = session.save_frame(data, speaker, elapsed)
+        path    = await session.save_frame(data, speaker, elapsed)
         log(f"  [dim]→[/dim] [yellow]Frame #{session.frame_count-1}[/yellow] "
             f"salvo: [dim]{Path(path).name}[/dim]")
 
     else:
         # Tipo desconhecido — salva como áudio por segurança
-        session.write_audio(data)
+        await session.write_audio(data)
 
 
 # ── Finalização da sessão ─────────────────────────────────────────────────────
@@ -314,10 +319,10 @@ async def finalize_session(session: Session,
                            auto_transcribe: bool = True):
     """Persiste metadados e (opcionalmente) dispara transcrição final."""
     if session.audio_file:
-        session.close_audio()
+        await session.close_audio()
 
     # Persiste timeline + speaker_map
-    session.save_metadata()
+    await session.save_metadata()
     summary = session.summary()
 
     if RICH:
@@ -326,7 +331,7 @@ async def finalize_session(session: Session,
         table.add_column("Valor", style="cyan")
         for k, v in summary.items():
             table.add_row(str(k), str(v))
-        console.print(table)
+        console.print(table)    
     else:
         print(json.dumps(summary, indent=2))
 
@@ -339,18 +344,28 @@ async def finalize_session(session: Session,
         log_warn("Whisper não disponível. Instale com: pip install faster-whisper")
         return
 
-    log(f"\n[bold]Iniciando transcrição[/bold] (modelo: [cyan]{cfg.whisper_model}[/cyan])…")
+    log(f"\n[bold]Iniciando transcrição em processo separado[/bold] "
+        f"(modelo: [cyan]{cfg.whisper_model}[/cyan])…")
     loop = asyncio.get_event_loop()
-    try:
-        transcript = await loop.run_in_executor(
-            None,
-            _transcribe_sync,
-            session.dir,
-        )
-        log_ok(f"Transcrição concluída: {len(transcript['segments'])} segmentos")
-        log_ok(f"Arquivos: {session.dir}/transcript.{{json,txt,srt}}")
-    except Exception as e:
-        log_error(f"Erro na transcrição: {e}")
+    session_dir = session.dir
+
+    fut = loop.run_in_executor(
+        transcription_pool,
+        _transcribe_sync,
+        session_dir,
+    )
+
+    def _on_transcribe_done(f: asyncio.Future):
+        exc = f.exception()
+        if exc:
+            log_error(f"Erro na transcrição ({session_dir.name}): {exc}")
+        else:
+            result = f.result()
+            n_seg = len(result.get('segments', []))
+            log_ok(f"Transcrição concluída ({session_dir.name}): {n_seg} segmentos")
+            log_ok(f"Arquivos: {session_dir}/transcript.{{json,txt,srt}}")
+
+    fut.add_done_callback(_on_transcribe_done)
 
 
 def _transcribe_sync(session_dir: Path) -> dict:
@@ -383,6 +398,9 @@ def print_banner():
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
+    global transcription_pool
+    transcription_pool = ProcessPoolExecutor(max_workers=1)
+
     print_banner()
 
     async with websockets.serve(
@@ -412,6 +430,10 @@ async def main():
         log_warn(f"{len(active_sessions)} sessão(ões) ativa(s) — salvando...")
         for ws, session in list(active_sessions.items()):
             await finalize_session(session, auto_transcribe=False)
+
+    # Encerra pool de transcrição
+    if transcription_pool:
+        transcription_pool.shutdown(wait=True)
 
     log_ok("Servidor encerrado.")
 

@@ -66,25 +66,26 @@ class Session:
             frames_dir=frames,
         )
 
-    def open_audio(self):
-        self.audio_file = open(self.audio_path, "wb")
+    async def open_audio(self):
+        self.audio_file = await aiofiles.open(self.audio_path, "wb")
 
-    def write_audio(self, data: bytes):
+    async def write_audio(self, data: bytes):
         if self.audio_file:
-            self.audio_file.write(data)
+            await self.audio_file.write(data)
             self.chunk_count += 1
 
-    def close_audio(self):
+    async def close_audio(self):
         if self.audio_file:
-            self.audio_file.flush()
-            self.audio_file.close()
+            await self.audio_file.flush()
+            await self.audio_file.close()
             self.audio_file = None
 
-    def save_frame(self, data: bytes, speaker: str, elapsed: int) -> str:
+    async def save_frame(self, data: bytes, speaker: str, elapsed: int) -> str:
         speaker_slug = (speaker or "unknown").replace(" ", "_")[:30]
         filename = f"frame_{self.frame_count:04d}_{elapsed:05d}s_{speaker_slug}.png"
         path = self.frames_dir / filename
-        path.write_bytes(data)
+        async with aiofiles.open(path, "wb") as f:
+            await f.write(data)
         self.frame_count += 1
         return str(path)
 
@@ -119,19 +120,16 @@ class Session:
                 break
         return speaker
 
-    def save_metadata(self):
+    async def save_metadata(self):
         """Persiste timeline e speaker_map em disco ao fim da sessão."""
-        self.timeline_path.write_text(
-            json.dumps(self.timeline, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-        self.speaker_map_path.write_text(
-            json.dumps({
+        async with aiofiles.open(self.timeline_path, "w", encoding="utf-8") as f:
+            await f.write(json.dumps(self.timeline, indent=2, ensure_ascii=False))
+        async with aiofiles.open(self.speaker_map_path, "w", encoding="utf-8") as f:
+            await f.write(json.dumps({
                 "chunks":         self.speaker_map,
                 "speaker_events": self.speaker_events,
                 "participants":   self.participants,
-            }, indent=2, ensure_ascii=False),
-            encoding="utf-8"
-        )
+            }, indent=2, ensure_ascii=False))
 
     def summary(self) -> dict:
         size_mb = self.audio_path.stat().st_size / 1024 / 1024 if self.audio_path.exists() else 0

@@ -34,6 +34,16 @@ except ImportError:
 
 console = Console() if RICH_AVAILABLE else None
 
+# Cache do modelo — carregado uma vez por processo e reutilizado
+_model_cache: dict[str, "WhisperModel"] = {}
+
+
+def _get_model(model_name: str) -> "WhisperModel":
+    """Retorna modelo cacheado ou carrega na primeira chamada."""
+    if model_name not in _model_cache:
+        _model_cache[model_name] = WhisperModel(model_name, compute_type="auto")
+    return _model_cache[model_name]
+
 
 @dataclass
 class TranscriptSegment:
@@ -160,10 +170,10 @@ def transcribe(session_dir: Path, model_name: str = "medium",
     wav_size = audio_wav.stat().st_size / 1024 / 1024
     _print_ok(f"WAV gerado ({wav_size:.1f} MB)")
 
-    # ── Carrega modelo faster-whisper ──────────────────────────────────────────
+    # ── Carrega modelo faster-whisper (cacheado entre chamadas) ────────────────
     _print_step(f"Carregando modelo faster-whisper '{model_name}'...")
-    model = WhisperModel(model_name, compute_type="auto")
-    _print_ok("Modelo carregado")
+    model = _get_model(model_name)
+    _print_ok("Modelo pronto")
 
     # ── Transcrição ────────────────────────────────────────────────────────────
     _print_step("Transcrevendo... (pode demorar alguns minutos)")
