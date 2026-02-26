@@ -300,3 +300,43 @@ Binário → <PNG do slide/tela compartilhada>
 
 > Velocidade "Nx" = processa N horas de áudio em 1 hora de CPU.
 > Com GPU NVIDIA, todos os modelos são ~5-10x mais rápidos.
+
+---
+
+## Docker (opcional)
+
+Este projeto inclui Dockerfiles para execução em container.
+
+### Arquivos
+
+- `backend/Dockerfile.cpu` — Versão CPU (sem GPU)
+- `backend/Dockerfile.gpu` — Versão com suporte a GPU NVIDIA
+- `docker-compose.yml` — Compose com ambos os serviços
+
+### Uso com Docker Compose
+
+```bash
+# Rodar apenas CPU
+docker-compose up backend-cpu
+
+# Rodar apenas GPU
+docker-compose up backend-gpu
+
+# Rodar ambos
+docker-compose up -d
+```
+
+### Configurações
+
+| Serviço | Porta | Descrição |
+|---------|-------|-----------|
+| `backend-cpu` | 8765 | Servidor CPU |
+| `backend-gpu` | 8766 | Servidor com GPU NVIDIA |
+
+### Requisitos GPU
+
+Para o serviço `backend-gpu`, é necessário ter:
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) instalado
+- Driver NVIDIA compatível no host
+
+Os volumes montam `./backend/output` para persistência das gravações.

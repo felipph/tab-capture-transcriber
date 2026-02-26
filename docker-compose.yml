@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  backend-cpu:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.cpu
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./backend/output:/app/output
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8765
+      - MODEL=medium
+      - LANGUAGE=pt
+    restart: unless-stopped
+
+  backend-gpu:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.gpu
+    ports:
+      - "8766:8765"
+    volumes:
+      - ./backend/output:/app/output
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8765
+      - MODEL=medium
+      - LANGUAGE=pt
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
