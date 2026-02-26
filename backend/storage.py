@@ -29,6 +29,15 @@ def new_session_id() -> str:
     return datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+def sanitize_folder_name(name: str) -> str:
+    """Remove caracteres inválidos para nome de pasta."""
+    import re
+    # Remove caracteres que não podem estar em nomes de arquivo/pasta
+    name = re.sub(r'[<>:"/\\|?*\(\)]', '', name)
+    # Limita tamanho
+    return name[:50] if name else "sessao"
+
+
 @dataclass
 class Session:
     id: str
@@ -52,8 +61,12 @@ class Session:
     pending_meta: Optional[dict] = None   # metadado aguardando o próximo binário
 
     @classmethod
-    def create(cls, session_id: str) -> "Session":
-        d = BASE_DIR / f"session_{session_id}"
+    def create(cls, session_id: str, name: str = None) -> "Session":
+        if name:
+            folder_name = f"{session_id}_{sanitize_folder_name(name)}"
+        else:
+            folder_name = f"session_{session_id}"
+        d = BASE_DIR / folder_name
         d.mkdir(parents=True, exist_ok=True)
         frames = d / "frames"
         frames.mkdir(exist_ok=True)

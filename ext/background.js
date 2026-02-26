@@ -205,8 +205,8 @@ function handleContentEvent(msg, sender) {
       callState.activeSpeaker = null;
       notifyRecorder({ event: 'CALL_STARTED', timestamp: msg.timestamp });
 
-      // Abre o recorder automaticamente quando a chamada começa
-      openRecorder();
+      // Não abre o popup automaticamente - apenas mostra o badge
+      // openRecorder();
       break;
 
     case 'CALL_ENDED':

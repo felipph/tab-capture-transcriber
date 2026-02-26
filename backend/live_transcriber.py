@@ -94,14 +94,19 @@ class LiveTranscriber:
 
         if not FASTER_WHISPER_AVAILABLE:
             raise RuntimeError(
-                "faster-whisper não instalado. Execute: pip install faster-whisper"
+                "faster-whisper não instalado. Execute: uv add faster-whisper"
             )
 
         _log(f"Carregando modelo faster-whisper '{self.model_name}'...")
-        self._model = WhisperModel(
-            self.model_name,
-            compute_type=self.compute_type,
-        )
+        try:
+            self._model = WhisperModel(
+                self.model_name,
+            )
+        except Exception as e:
+            _log(f"CUDA indisponível ({e}), usando CPU...")
+            self._model = WhisperModel(self.model_name,
+                device="cpu"
+            )
         _log_ok(f"Modelo '{self.model_name}' carregado")
 
     def start(self, on_segment: Callable[[LiveSegment], None]):

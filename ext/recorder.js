@@ -28,11 +28,15 @@ let lastFrameSize        = 0;
 // Media
 let tabRecorder  = null;
 let micRecorder  = null;
-let tabChunks    = [];
-let micChunks    = [];
 let tabStream    = null;
 let micStream    = null;
 let audioContext = null;
+
+// User speech detection
+let micAnalyser       = null;
+let userSpeakingTimer = null;
+let lastUserSpeakingState = false;
+const USER_SPEAKING_THRESHOLD = 30; // RMS threshold for speech detection
 
 // WebSocket
 let ws            = null;
@@ -468,6 +472,77 @@ function stopContentCapture() {
   addTimeline('Captura de conteúdo parada', '', 'yellow');
 }
 
+// ── User Speech Detection ─────────────────────────────────────────────────────
+function setupMicAnalyser() {
+  if (!micStream) return;
+
+  try {
+    const micAudioContext = new AudioContext({ sampleRate: 48000 });
+    const micSrc = micAudioContext.createMediaStreamSource(micStream);
+    micAnalyser = micAudioContext.createAnalyser();
+    micAnalyser.fftSize = 256;
+    micAnalyser.smoothingTimeConstant = 0.3;
+    micSrc.connect(micAnalyser);
+    log('Analisador de microfone configurado ✓', 'success');
+  } catch (err) {
+    log(`Erro ao configurar analisador: ${err.message}`, 'error');
+    micAnalyser = null;
+  }
+}
+
+function isUserSpeaking() {
+  if (!micAnalyser) return false;
+
+  const dataArray = new Uint8Array(micAnalyser.frequencyBinCount);
+  micAnalyser.getByteFrequencyData(dataArray);
+
+  // Calculate RMS-like average
+  let sum = 0;
+  for (let i = 0; i < dataArray.length; i++) {
+    sum += dataArray[i];
+  }
+  const average = sum / dataArray.length;
+
+  return average > USER_SPEAKING_THRESHOLD;
+}
+
+function startUserSpeakingDetection() {
+  if (!micAnalyser) return;
+
+  lastUserSpeakingState = false;
+  userSpeakingTimer = setInterval(() => {
+    const isSpeaking = isUserSpeaking();
+
+    if (isSpeaking !== lastUserSpeakingState) {
+      lastUserSpeakingState = isSpeaking;
+
+      if (isSpeaking) {
+        // User started speaking - update active speaker to "Você" (You)
+        updateActiveSpeaker('Você');
+        sendWsMeta({
+          type: 'SPEAKER_CHANGE',
+          speaker: 'Você',
+          elapsedSeconds: elapsedSeconds,
+          timestamp: Date.now()
+        });
+        log('Você está falando', 'info');
+      } else {
+        // User stopped speaking - reset to allow Teams detection to take over
+        activeSpeaker = null;
+      }
+    }
+  }, 300); // Check every 300ms
+}
+
+function stopUserSpeakingDetection() {
+  if (userSpeakingTimer) {
+    clearInterval(userSpeakingTimer);
+    userSpeakingTimer = null;
+  }
+  micAnalyser = null;
+  lastUserSpeakingState = false;
+}
+
 // ── MediaRecorder factory ─────────────────────────────────────────────────────
 function makeRecorder(stream, onChunk, intervalMs) {
   const isAudioOnly = stream.getVideoTracks().length === 0;
@@ -583,6 +658,9 @@ async function startCapture() {
         try {
           micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
           log('Microfone concedido ✓', 'success');
+
+          // Setup analyser for user speech detection
+          setupMicAnalyser();
         } catch (err) {
           log(`Mic indisponível (${err.message})`, 'error');
           micStream = null;
@@ -730,6 +808,7 @@ async function startCapture() {
       animateBars();
       if (toggleAutoSnap.checked) startAutoSnap();
       if (toggleContentCapture?.checked) startContentCapture();
+      if (captureAudio) startUserSpeakingDetection();
 
     } catch (err) {
       log('Erro de stream: ' + err.message, 'error');
@@ -766,6 +845,7 @@ function stopCapture() {
   tabStream = micStream = audioContext = null;
 
   stopContentCapture();
+  stopUserSpeakingDetection();
 
   if (toggleMeta.checked) {
     sendWsMeta({ type: 'RECORDING_STOP', duration: elapsedSeconds, timestamp: Date.now() });

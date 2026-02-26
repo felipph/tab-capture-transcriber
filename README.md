@@ -28,6 +28,8 @@ When recording a Microsoft Teams tab, you get additional features:
 - Automatic detection of call start/end
 - Participant list extraction
 - Active speaker detection
+- **User speaking detection** — automatically identifies when you are speaking
+- **Live transcription** — see real-time transcript while recording
 - Auto-start recording option
 
 All files are saved to your **Downloads/TabCapture/** folder:
@@ -92,8 +94,14 @@ Servidor WebSocket que recebe dados da extensão Chrome e gera:
 - `transcript.json` — transcrição estruturada com locutor por segmento
 - `transcript.txt` — versão legível
 - `transcript.srt` — legenda no formato SRT
+- `live_transcript.json/txt/srt` — transcrição em tempo real (durante a gravação)
 - `timeline.json` — todos os eventos da sessão
 - `speaker_map.json` — mapa chunkIndex → locutor
+
+### Novas funcionalidades
+- **Transcrição em tempo real** — veja a transcrição enquanto a gravação acontece
+- **Detecção de fala do usuário** — identifica automaticamente quando você está falando
+- **Nome intuitivo das pastas** — pastas nomeadas como `20260226_193702_Microsoft Teams`
 
 ## Instalação
 
@@ -141,7 +149,7 @@ cd backend
 uv run server.py
 ```
 
-Por padrão roda em `ws://localhost:8765` com modelo `medium` em português.
+Por padrão roda em `ws://localhost:8765` com modelo `large-v3-turbo` em português.
 
 ### Opções
 
@@ -195,11 +203,11 @@ uv run retranscribe.py output/session_20240225_143022 --language en
 
 ## Estrutura de saída
 
-Cada sessão gera um diretório em `output/`:
+Cada sessão gera um diretório em `output/` com nome intuitivo (`20260226_193702_Microsoft Teams`):
 
 ```
 output/
-└── session_20240225_143022/
+└── 20260226_193702_Microsoft Teams/
     ├── audio.webm              ← gravação bruta da chamada
     ├── audio.wav               ← convertido para Whisper
     ├── frames/
@@ -208,9 +216,12 @@ output/
     │   └── ...
     ├── timeline.json           ← todos os eventos WS (cronológico)
     ├── speaker_map.json        ← chunkIndex → speaker + speaker_events
-    ├── transcript.json         ← transcrição estruturada (veja abaixo)
+    ├── transcript.json         ← transcrição final estruturada
     ├── transcript.txt          ← versão legível
-    └── transcript.srt          ← legenda SRT
+    ├── transcript.srt          ← legenda SRT
+    ├── live_transcript.json    ← transcrição em tempo real
+    ├── live_transcript.txt     ← versão legível
+    └── live_transcript.srt     ← legenda SRT
 ```
 
 ### Formato transcript.json

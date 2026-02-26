@@ -41,7 +41,11 @@ _model_cache: dict[str, "WhisperModel"] = {}
 def _get_model(model_name: str) -> "WhisperModel":
     """Retorna modelo cacheado ou carrega na primeira chamada."""
     if model_name not in _model_cache:
-        _model_cache[model_name] = WhisperModel(model_name, compute_type="auto")
+        try:
+            _model_cache[model_name] = WhisperModel(model_name, device="cuda")
+        except Exception as e:
+            print(f"[faster-whisper] CUDA indisponível ({e}), usando CPU...")
+            _model_cache[model_name] = WhisperModel(model_name, device="cpu")
     return _model_cache[model_name]
 
 
@@ -177,14 +181,31 @@ def transcribe(session_dir: Path, model_name: str = "medium",
 
     # ── Transcrição ────────────────────────────────────────────────────────────
     _print_step("Transcrevendo... (pode demorar alguns minutos)")
-    segments_iter, info = model.transcribe(
-        str(audio_wav),
-        language=language or None,
-        word_timestamps=True,
-        vad_filter=True,
-        beam_size=5,
-        condition_on_previous_text=True,
-    )
+    try:
+        segments_iter, info = model.transcribe(
+            str(audio_wav),
+            language=language or None,
+            word_timestamps=True,
+            vad_filter=True,
+            beam_size=5,
+            condition_on_previous_text=True,
+        )
+    except Exception as e:
+        if "CUDA" in str(e) or "cuda" in str(e):
+            _print_step("CUDA falhou, recarregando modelo em modo CPU...")
+            # Recarrega modelo em CPU forçada
+            model = WhisperModel(model_name, device="cpu")
+            _model_cache[model_name] = model
+            segments_iter, info = model.transcribe(
+                str(audio_wav),
+                language=language or None,
+                word_timestamps=True,
+                vad_filter=True,
+                beam_size=5,
+                condition_on_previous_text=True,
+            )
+        else:
+            raise
 
     raw_segments = list(segments_iter)
     _print_ok(f"Transcrição concluída ({len(raw_segments)} segmentos)")
@@ -372,9 +393,9 @@ def save_live_transcript(session_dir: Path, live_segments: list,
 
     live_segments: lista de LiveSegment (ou objetos com .text, .start, .end, .speaker, .words)
     """
-    out_json = session_dir / "transcript.json"
-    out_txt  = session_dir / "transcript.txt"
-    out_srt  = session_dir / "transcript.srt"
+    out_json = session_dir / "live_transcript.json"
+    out_txt  = session_dir / "live_transcript.txt"
+    out_srt  = session_dir / "live_transcript.srt"
 
     # Converte LiveSegment → TranscriptSegment
     segments = [

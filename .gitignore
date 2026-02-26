@@ -42,3 +42,5 @@ Thumbs.db
 output/
 *.log
 .env
+__pycache__/
+backend/__pycache__

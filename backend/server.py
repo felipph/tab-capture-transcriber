@@ -32,7 +32,7 @@ from typing import Optional
 import websockets
 from websockets.server import WebSocketServerProtocol
 
-from storage import Session, new_session_id
+from storage import Session, new_session_id, BASE_DIR
 from transcriber import transcribe, WHISPER_AVAILABLE
 from live_transcriber import LiveTranscriber, LiveSegment, FASTER_WHISPER_AVAILABLE
 
@@ -112,7 +112,8 @@ def log_event(event: str, detail: str = ""):
 
 async def handle_client(websocket: WebSocketServerProtocol):
     session_id = new_session_id()
-    session    = Session.create(session_id)
+    session_name = None  # será definido quando receber RECORDING_START
+    session    = Session.create(session_id, session_name)
     await session.open_audio()
     active_sessions[websocket] = session
 
@@ -177,6 +178,24 @@ async def handle_json(session: Session, websocket: WebSocketServerProtocol, raw:
     # ── RECORDING_START ───────────────────────────────────────────────────
     elif event_type == "RECORDING_START":
         session.participants = data.get("participants", session.participants)
+        
+        # Se temos o título da aba, recria a sessão com nome correto
+        tab_title = data.get("tabTitle")
+        if tab_title:
+            from storage import sanitize_folder_name
+            new_folder = f"{session.id}_{sanitize_folder_name(tab_title)}"
+            old_dir = session.dir
+            new_dir = BASE_DIR / new_folder
+            
+            if old_dir != new_dir and not new_dir.exists():
+                old_dir.rename(new_dir)
+                session.dir = new_dir
+                session.audio_path = new_dir / "audio.webm"
+                session.timeline_path = new_dir / "timeline.json"
+                session.speaker_map_path = new_dir / "speaker_map.json"
+                session.frames_dir = new_dir / "frames"
+                log(f"Sessão renomeada para: {new_folder}")
+        
         log_event("RECORDING_START",
                   f"separate={data.get('separate', False)}")
 
@@ -245,10 +264,23 @@ async def handle_json(session: Session, websocket: WebSocketServerProtocol, raw:
         duration = data.get("duration", 0)
         log_event("RECORDING_STOP", f"duração: {duration}s")
 
-        # Para transcrição em tempo real
+        # Para transcrição em tempo real e salva os segmentos
         live_tr = active_transcribers.get(websocket)
+        live_segments = []
         if live_tr:
             live_tr.stop()
+            live_segments = live_tr.all_segments
+            active_transcribers.pop(websocket, None)
+
+        # Salva transcrição em tempo real se houver segmentos
+        if live_segments:
+            from transcriber import save_live_transcript
+            save_live_transcript(
+                session_dir=session.dir,
+                live_segments=live_segments,
+                model_name=cfg.whisper_model,
+                language=cfg.language,
+            )
 
         await session.close_audio()
         await finalize_session(session, websocket, auto_transcribe=cfg.auto_transcribe)
@@ -370,6 +402,9 @@ async def finalize_session(session: Session,
 
 def _transcribe_sync(session_dir: Path) -> dict:
     """Wrapper síncrono para chamar do executor."""
+    # Limpa cache do modelo e força CPU para evitar conflitos de CUDA
+    from transcriber import _model_cache
+    _model_cache.clear()
     return transcribe(
         session_dir=session_dir,
         model_name=cfg.whisper_model,
