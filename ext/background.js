@@ -221,7 +221,8 @@ function handleContentEvent(msg, sender) {
 
     case 'SPEAKER_CHANGE':
       callState.activeSpeaker = msg.speaker;
-      notifyRecorder({ event: 'SPEAKER_CHANGE', speaker: msg.speaker, timestamp: msg.timestamp });
+      callState.activeSpeakerEmail = msg.speakerEmail || null;
+      notifyRecorder({ event: 'SPEAKER_CHANGE', speaker: msg.speaker, speakerEmail: msg.speakerEmail, timestamp: msg.timestamp });
       break;
 
     case 'CONTENT_SHARING_START':

@@ -16,6 +16,7 @@ let animFrame        = null;
 let participants     = {};
 let activeSpeaker    = null;
 let callStartTime    = null;
+let audioChunkIndex  = 0;
 
 // Content capture
 let contentSharing       = false;
@@ -37,6 +38,8 @@ let audioContext = null;
 let ws            = null;
 let wsConnected   = false;
 let wsChunkMs     = 250;
+let wsSendQueue   = [];
+let wsSending     = false;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -118,6 +121,15 @@ function connectWS() {
   if (!toggleWS.checked) return;
   const url = wsUrlInput.value.trim();
   if (!url) return;
+
+  // Fecha conexão anterior se existir (evita duplicatas)
+  if (ws) {
+    try { ws.onclose = null; ws.close(); } catch (_) {}
+    ws = null;
+    wsConnected = false;
+  }
+  wsSendQueue = [];
+  wsSending = false;
 
   try {
     ws = new WebSocket(url);
@@ -201,14 +213,36 @@ function appendTranscript(msg) {
   while (transcriptList.children.length > 200) transcriptList.removeChild(transcriptList.firstChild);
 }
 
+function flushWsQueue() {
+  if (wsSending) return;
+  wsSending = true;
+  while (wsSendQueue.length > 0) {
+    const item = wsSendQueue.shift();
+    try {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(item);
+    } catch (_) {}
+  }
+  wsSending = false;
+}
+
 function sendWsMeta(data) {
   if (!ws || ws.readyState !== WebSocket.OPEN || !toggleMeta.checked) return;
-  try { ws.send(JSON.stringify(data)); } catch (_) {}
+  wsSendQueue.push(JSON.stringify(data));
+  flushWsQueue();
 }
 
 function sendWsAudio(arrayBuffer) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  try { ws.send(arrayBuffer); } catch (_) {}
+  wsSendQueue.push(arrayBuffer);
+  flushWsQueue();
+}
+
+// Envia meta + binário de forma atômica (sem interleaving de audio chunks)
+function sendWsMetaAndBinary(metaObj, binaryBuffer) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  wsSendQueue.push(JSON.stringify(metaObj));
+  wsSendQueue.push(binaryBuffer);
+  flushWsQueue();
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
@@ -337,7 +371,7 @@ function takeScreenshot(label = 'manual') {
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
 
-    sendWsMeta({
+    sendWsMetaAndBinary({
       type: 'CONTENT_FRAME',
       speaker: activeSpeaker,
       elapsedSeconds,
@@ -347,13 +381,7 @@ function takeScreenshot(label = 'manual') {
       width: 0,
       height: 0,
       timestamp: Date.now()
-    });
-
-    try {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(bytes.buffer);
-      }
-    } catch (_) {}
+    }, bytes.buffer);
 
     contentFrameIndex++;
     snapCount++;
@@ -397,8 +425,8 @@ function captureAndSendFrame() {
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
 
-    // Envia metadado JSON primeiro
-    sendWsMeta({
+    // Envia metadado + binário PNG de forma atômica
+    sendWsMetaAndBinary({
       type: 'CONTENT_FRAME',
       speaker: contentPresenter || activeSpeaker,
       elapsedSeconds,
@@ -407,14 +435,7 @@ function captureAndSendFrame() {
       width: 0,
       height: 0,
       timestamp: Date.now()
-    });
-
-    // Envia o binário PNG
-    try {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(bytes.buffer);
-      }
-    } catch (_) {}
+    }, bytes.buffer);
 
     contentFrameIndex++;
     snapCount++;
@@ -534,10 +555,19 @@ async function startCapture() {
     try {
       wsChunkMs = parseInt(wsChunkMsInput.value, 10) || 250;
 
-      // Callback chamado a cada chunk — envia via WS em tempo real
+      // Callback chamado a cada chunk — envia meta + binário atomicamente
       const onTabChunk = (data) => {
         if (!wsConnected) return;
-        data.arrayBuffer().then(buf => sendWsAudio(buf));
+        data.arrayBuffer().then(buf => {
+          sendWsMetaAndBinary({
+            type: 'AUDIO_CHUNK_META',
+            chunkIndex: audioChunkIndex,
+            speaker: activeSpeaker,
+            elapsedSeconds,
+            timestamp: Date.now()
+          }, buf);
+          audioChunkIndex++;
+        });
       };
 
       // Tab stream - captura áudio e vídeo
@@ -690,10 +720,16 @@ async function startCapture() {
         });
       }
 
+      // Reset contadores para nova sessão
+      contentFrameIndex = 0;
+      lastFrameSize = 0;
+      audioChunkIndex = 0;
+
       setUI(true);
       startTimer();
       animateBars();
       if (toggleAutoSnap.checked) startAutoSnap();
+      if (toggleContentCapture?.checked) startContentCapture();
 
     } catch (err) {
       log('Erro de stream: ' + err.message, 'error');
@@ -735,7 +771,9 @@ function stopCapture() {
     sendWsMeta({ type: 'RECORDING_STOP', duration: elapsedSeconds, timestamp: Date.now() });
   }
 
-  if (!toggleWS.checked) disconnectWS();
+  // Sempre desconecta — cada gravação abre uma nova sessão no backend
+  // Pequeno delay para garantir que RECORDING_STOP seja enviado antes de fechar
+  setTimeout(disconnectWS, 500);
 
   addTimeline('Gravação encerrada', `Duração: ${formatTime(elapsedSeconds)}`, 'blue');
 
@@ -785,7 +823,8 @@ chrome.runtime.onMessage.addListener((msg) => {
     case 'PARTICIPANTS_UPDATE':
       participants = msg.participants || {};
       renderParticipants();
-      if (toggleMeta.checked && isRecording) {
+      // Sempre envia ao backend (crítico para identificação de falantes na transcrição)
+      if (isRecording && wsConnected) {
         sendWsMeta({ type: 'PARTICIPANTS_UPDATE', participants, timestamp: msg.timestamp });
       }
       addTimeline(
@@ -800,14 +839,16 @@ chrome.runtime.onMessage.addListener((msg) => {
         updateActiveSpeaker(msg.speaker);
         if (msg.speaker) {
           addTimeline(`${msg.speaker} está falando`, '', 'green');
-          if (toggleMeta.checked && isRecording) {
-            sendWsMeta({
-              type: 'SPEAKER_CHANGE',
-              speaker: msg.speaker,
-              timestamp: msg.timestamp,
-              elapsedSeconds
-            });
-          }
+        }
+        // Sempre envia ao backend (crítico para identificação de falantes na transcrição)
+        if (isRecording && wsConnected) {
+          sendWsMeta({
+            type: 'SPEAKER_CHANGE',
+            speaker: msg.speaker,
+            speakerEmail: msg.speakerEmail || null,
+            timestamp: msg.timestamp,
+            elapsedSeconds
+          });
         }
       }
       break;

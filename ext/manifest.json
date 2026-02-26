@@ -35,8 +35,10 @@
     {
       "matches": [
         "https://teams.microsoft.com/*",
+        "https://teams.cloud.microsoft/*",
         "https://teams.live.com/*",
-        "https://teams.microsoft.us/*"
+        "https://teams.microsoft.us/*",
+        "https://teams.cloud.microsoft.mcas.ms/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

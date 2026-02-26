@@ -10,6 +10,11 @@
 - [x] Extração de lista de participantes (DOM)
 - [x] Backend com timeline, speaker_map e transcrição estruturada
 - [x] Re-transcrição de sessões anteriores
+- [x] Transcrição em tempo real com `faster-whisper` (live transcription)
+- [x] Captura automática de conteúdo compartilhado (frames → backend)
+- [x] Detecção de falante via `data-is-speaking` (abordagem A)
+- [x] Detecção de compartilhamento via `data-stream-type="ScreenSharing"`
+- [x] Extração de participantes dos tiles de vídeo (não depende do roster aberto)
 
 ---
 
@@ -17,17 +22,24 @@
 
 ### 1. Identificação de Falantes por Animação Visual do Teams
 **Prioridade:** Alta
-**Status:** Backlog
+**Status:** ✅ Implementado (Abordagem A)
 
-O Teams indica visualmente quem está falando com uma borda animada/pulsante ao redor do tile de vídeo. A detecção atual via seletores CSS estáticos (`content.js`) é frágil porque o Teams ofusca e muda classes frequentemente.
+O Teams indica visualmente quem está falando com uma borda animada/pulsante ao redor do tile de vídeo.
 
-**Abordagens a investigar:**
+**Abordagem implementada: A) Inspeção do DOM**
+- Descoberto atributo estável `data-is-speaking="true"` nos tiles de vídeo (`data-cid="calling-participant-stream"`)
+- Nome extraído do `aria-label` do tile (ex: "Yargo Gagliardi, O vídeo está passando, ...")
+- E-mail extraído do `data-tid` (ex: "yargo.gagliardi@nuclea.com.br")
+- `MutationObserver` atualizado com `data-is-speaking` no `attributeFilter`
+- Fallbacks mantidos: seletores de roster e CSS classes
 
-#### A) Inspeção profunda do DOM (preferencial)
-- Abrir DevTools durante uma chamada e inspecionar o HTML/CSS exato do tile de quem está falando
-- Identificar quais atributos, classes ou estilos inline mudam quando alguém fala (ex: `border-color`, `box-shadow`, `animation-name`, classes com hash)
-- Implementar detecção baseada em **computed styles** ao invés de seletores estáticos
-- Usar `MutationObserver` com foco em atributos de estilo que mudam durante a animação
+**Pré-requisitos (concluídos):**
+- [x] Obter screenshot do Teams durante chamada com alguém falando
+- [x] Inspecionar o DOM (DevTools F12) do tile ativo para mapear atributos relevantes
+- [x] Decidir abordagem → **A) DOM inspection** com `data-is-speaking`
+- [x] Implementar e testar
+
+**Abordagens alternativas (para referência futura):**
 
 #### B) Análise de pixels via Canvas (fallback visual)
 - Capturar periodicamente o conteúdo da aba via `captureVisibleTab`
@@ -40,12 +52,6 @@ O Teams indica visualmente quem está falando com uma borda animada/pulsante ao 
 - Não depende do DOM — funciona com qualquer fonte de áudio
 - Pode ser combinado com a detecção visual para maior precisão
 - Requer mais recursos computacionais (GPU recomendada)
-
-**Pré-requisitos para implementar:**
-- [ ] Obter screenshot do Teams durante chamada com alguém falando
-- [ ] Inspecionar o DOM (DevTools F12) do tile ativo para mapear atributos relevantes
-- [ ] Decidir abordagem (A, B, C ou combinação)
-- [ ] Implementar e testar
 
 ---
 
