@@ -113,13 +113,23 @@ sudo apt install ffmpeg
 
 ### 2. Instalar dependências Python
 
+Este projeto usa **[uv](https://github.com/astral-sh/uv)** como gerenciador de dependências.
+
 ```bash
-pip install -r requirements.txt
+# Instalar uv (se ainda não tiver)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Instalar dependências
+cd backend
+uv sync
+
+# Ativar o ambiente virtual
+source .venv/bin/activate
 ```
 
 > **GPU (opcional):** Se tiver NVIDIA GPU, instale PyTorch com CUDA para transcrição muito mais rápida:
 > ```bash
-> pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+> uv sync --extra cuda
 > ```
 
 ## Uso
@@ -127,7 +137,8 @@ pip install -r requirements.txt
 ### Iniciar o servidor
 
 ```bash
-python server.py
+cd backend
+uv run server.py
 ```
 
 Por padrão roda em `ws://localhost:8765` com modelo `medium` em português.
@@ -135,7 +146,7 @@ Por padrão roda em `ws://localhost:8765` com modelo `medium` em português.
 ### Opções
 
 ```
-python server.py [opções]
+uv run server.py [opções]
 
   --host HOST        Endereço de escuta (padrão: localhost)
   --port PORT        Porta (padrão: 8765)
@@ -150,29 +161,36 @@ python server.py [opções]
 
 ```bash
 # Servidor padrão (português, modelo medium)
-python server.py
+cd backend
+uv run server.py
 
 # Modelo maior para mais precisão
-python server.py --model large-v3
+cd backend
+uv run server.py --model large-v3
 
 # Chamada em inglês, acessível na rede local
-python server.py --host 0.0.0.0 --language en
+cd backend
+uv run server.py --host 0.0.0.0 --language en
 
 # Só grava sem transcrever (transcreve depois manualmente)
-python server.py --no-transcribe
+cd backend
+uv run server.py --no-transcribe
 ```
 
 ### Re-transcrever uma sessão
 
 ```bash
 # Lista todas as sessões gravadas
-python retranscribe.py --list
+cd backend
+uv run retranscribe.py --list
 
 # Re-transcreve com modelo maior
-python retranscribe.py output/session_20240225_143022 --model large-v3
+cd backend
+uv run retranscribe.py output/session_20240225_143022 --model large-v3
 
 # Muda idioma
-python retranscribe.py output/session_20240225_143022 --language en
+cd backend
+uv run retranscribe.py output/session_20240225_143022 --language en
 ```
 
 ## Estrutura de saída
