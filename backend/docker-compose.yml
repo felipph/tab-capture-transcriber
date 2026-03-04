@@ -1,0 +1,35 @@
+services:
+  backend-cpu:
+    image: felipph/transcriber-pro-gpu:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./output:/app/output
+    environment:
+      - PYTHONUNBUFFERED=1
+    profiles:
+      - cpu
+
+  backend-gpu:
+    image: felipph/transcriber-pro-cpu:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./output:/app/output
+    environment:
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles:
+      - gpu

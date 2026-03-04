@@ -1,7 +1,6 @@
-version: '3.8'
-
 services:
   backend-cpu:
+    image: felipph/tab-transcribre-pro-backend-gpu:latest
     build:
       context: ./backend
       dockerfile: Dockerfile.cpu
@@ -15,8 +14,11 @@ services:
       - MODEL=medium
       - LANGUAGE=pt
     restart: unless-stopped
+    profiles:
+      - cpu
 
   backend-gpu:
+    image: felipph/tab-transcribre-pro-backend-cpu:latest
     build:
       context: ./backend
       dockerfile: Dockerfile.gpu
@@ -37,3 +39,5 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
+    profiles:
+      - gpu

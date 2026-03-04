@@ -57,21 +57,11 @@ O Teams indica visualmente quem está falando com uma borda animada/pulsante ao 
 
 ## 📋 Backlog
 
-### 2. Melhorar precisão da transcrição
-- Testar modelo `large-v3` vs `large-v3-turbo`
-- Avaliar pós-processamento com LLM para correção de nomes próprios
-- Implementar vocabulário personalizado (nomes dos participantes como hints)
-
-### 3. Interface de revisão da transcrição
-- UI web para revisar e corrigir transcrições geradas
-- Edição inline de speaker e texto
-- Exportação para DOCX/PDF
-
-### 4. Detecção de conteúdo compartilhado (slides)
+### 1. Detecção de conteúdo compartilhado (slides)
 - OCR nos frames capturados para extrair texto dos slides
 - Vincular conteúdo dos slides aos segmentos de fala correspondentes
 
-### 5. Resumo automático da reunião
+### 2. Resumo automático da reunião
 - Usar LLM para gerar resumo da transcrição
 - Identificar action items e decisões
 - Exportar em formato estruturado

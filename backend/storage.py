@@ -20,6 +20,9 @@ import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
+from PIL import Image
+import numpy as np
+import io
 
 
 BASE_DIR = Path("output")
@@ -59,6 +62,8 @@ class Session:
     frame_count: int = 0
     chunk_count: int = 0
     pending_meta: Optional[dict] = None   # metadado aguardando o próximo binário
+    _last_frame_fingerprint: Optional[np.ndarray] = field(default=None, repr=False)  # thumbnail do último frame salvo
+    _frame_diff_threshold: float = 0.05   # threshold de diferença (0.15 = 15%) para considerar novo slide
 
     @classmethod
     def create(cls, session_id: str, name: str = None) -> "Session":
@@ -93,13 +98,53 @@ class Session:
             await self.audio_file.close()
             self.audio_file = None
 
-    async def save_frame(self, data: bytes, speaker: str, elapsed: int) -> str:
+    def _compute_frame_fingerprint(self, data: bytes) -> np.ndarray:
+        """Gera um fingerprint da imagem (32x32 grayscale) para comparação."""
+        try:
+            img = Image.open(io.BytesIO(data))
+            # Converte para RGB se necessário
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            # Redimensiona para 32x32 e converte para grayscale
+            img = img.resize((32, 32), Image.Resampling.LANCZOS)
+            # Converte para numpy array e grayscale
+            arr = np.array(img)
+            # Converte para grayscale usando luminância
+            gray = np.dot(arr[...,:3], [0.299, 0.587, 0.114])
+            # Normaliza para 0-1
+            return gray.astype(np.float32) / 255.0
+        except Exception:
+            return np.zeros((32, 32), dtype=np.float32)
+
+    def _frames_are_similar(self, fp1: np.ndarray, fp2: np.ndarray) -> bool:
+        """Compara dois fingerprints e retorna True se forem similares (mesmo slide)."""
+        if fp1 is None or fp2 is None:
+            return False
+        # Calcula a diferença média absoluta
+        diff = np.abs(fp1 - fp2)
+        mean_diff = np.mean(diff)
+        # Se a diferença média for menor que o threshold, consideramos iguais
+        return mean_diff < self._frame_diff_threshold
+
+    async def save_frame(self, data: bytes, speaker: str, elapsed: int) -> Optional[str]:
+        """Salva o frame apenas se for significativamente diferente do anterior (novo slide)."""
+        # Gera fingerprint do frame atual
+        current_fp = self._compute_frame_fingerprint(data)
+
+        # Se temos um frame anterior, compara
+        if self._last_frame_fingerprint is not None:
+            if self._frames_are_similar(self._last_frame_fingerprint, current_fp):
+                # Frames são similares - descarta (mesmo slide)
+                return None
+
+        # Frames são diferentes o suficiente - salva
         speaker_slug = (speaker or "unknown").replace(" ", "_")[:30]
         filename = f"frame_{self.frame_count:04d}_{elapsed:05d}s_{speaker_slug}.png"
         path = self.frames_dir / filename
         async with aiofiles.open(path, "wb") as f:
             await f.write(data)
         self.frame_count += 1
+        self._last_frame_fingerprint = current_fp
         return str(path)
 
     def add_timeline_event(self, event: dict):

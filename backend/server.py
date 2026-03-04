@@ -35,6 +35,7 @@ from websockets.server import WebSocketServerProtocol
 from storage import Session, new_session_id, BASE_DIR
 from transcriber import transcribe, WHISPER_AVAILABLE
 from live_transcriber import LiveTranscriber, LiveSegment, FASTER_WHISPER_AVAILABLE
+from concurrent.futures import ThreadPoolExecutor 
 
 try:
     from rich.console import Console
@@ -319,8 +320,11 @@ async def handle_binary(session: Session, websocket: WebSocketServerProtocol, da
         speaker = meta.get("speaker")
         elapsed = meta.get("elapsedSeconds", 0)
         path    = await session.save_frame(data, speaker, elapsed)
-        log(f"  [dim]→[/dim] [yellow]Frame #{session.frame_count-1}[/yellow] "
-            f"salvo: [dim]{Path(path).name}[/dim]")
+        if path:
+            log(f"  [dim]→[/dim] [yellow]Frame #{session.frame_count-1}[/yellow] "
+                f"salvo: [dim]{Path(path).name}[/dim]")
+        else:
+            log(f"  [dim]→ Frame descartado (mesmo slide)[/dim]")
 
     else:
         # Tipo desconhecido — salva como áudio por segurança
@@ -404,7 +408,7 @@ def _transcribe_sync(session_dir: Path) -> dict:
     """Wrapper síncrono para chamar do executor."""
     # Limpa cache do modelo e força CPU para evitar conflitos de CUDA
     from transcriber import _model_cache
-    _model_cache.clear()
+    # _model_cache.clear()
     return transcribe(
         session_dir=session_dir,
         model_name=cfg.whisper_model,
@@ -434,7 +438,7 @@ def print_banner():
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
     global transcription_pool
-    transcription_pool = ProcessPoolExecutor(max_workers=1)
+    transcription_pool = ThreadPoolExecutor(max_workers=1)
 
     print_banner()
 

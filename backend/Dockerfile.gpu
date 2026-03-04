@@ -1,18 +1,36 @@
-FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
+# Etapa de build (para compilar dependências)
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
 WORKDIR /app
 
+# Copie pyproject.toml, uv.lock e README.md para instalar dependências
+COPY pyproject.toml uv.lock README.md ./
+
+# Instale dependências com UV (rápido e eficiente)
+# Esta camada só será reconstruída se pyproject.toml ou uv.lock mudarem
+RUN uv sync --frozen
+
+# Etapa final
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+# Install Tesseract and language packs
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    python3.12 \
-    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock ./
-RUN pip install uv && uv sync --frozen --no-dev
+# Do not run as root in production
+WORKDIR /app
 
-COPY *.py ./
+COPY --from=builder /app /app
+
+COPY . .
+
+ENV LOG_LEVEL=INFO
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+# RUN chmod 777 /app -R
 
 EXPOSE 8765
 
-CMD ["uv", "run", "server.py"]
+CMD ["python3", "server.py"]

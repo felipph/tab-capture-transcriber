@@ -132,8 +132,8 @@ async function getStreamId(sendResponse, targetTabId = null) {
 async function takeScreenshot(sendResponse) {
   try {
     // Usa a aba selecionada ou a do callState
-    const tabId = selectedTabId || callState.tabId;
-    let tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null;
+    const targetTabId = selectedTabId || callState.tabId;
+    let tab = targetTabId ? await chrome.tabs.get(targetTabId).catch(() => null) : null;
 
     if (!tab) {
       // Fallback: aba ativa que não seja interna do Chrome
@@ -143,7 +143,24 @@ async function takeScreenshot(sendResponse) {
 
     if (!tab) throw new Error('Nenhuma aba disponível para screenshot');
 
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png', quality: 95 });
+    // Guarda a aba atualmente ativa nesta janela para restaurar depois
+    const currentWindowId = tab.windowId;
+    const [originalActiveTab] = await chrome.tabs.query({ windowId: currentWindowId, active: true });
+
+    // Ativa a aba que queremos capturar (se não for a ativa)
+    if (originalActiveTab && originalActiveTab.id !== tab.id) {
+      await chrome.tabs.update(tab.id, { active: true });
+      // Pequeno delay para garantir que a aba foi renderizada
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    const dataUrl = await chrome.tabs.captureVisibleTab(currentWindowId, { format: 'png', quality: 95 });
+
+    // Restaura a aba original (se diferente da capturada)
+    if (originalActiveTab && originalActiveTab.id !== tab.id) {
+      await chrome.tabs.update(originalActiveTab.id, { active: true });
+    }
+
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     await chrome.downloads.download({
       url: dataUrl, filename: `TabCapture/screenshots/screenshot-${ts}.png`, saveAs: false
@@ -157,8 +174,8 @@ async function takeScreenshot(sendResponse) {
 // ── Captura frame (sem download local) ───────────────────────────────────────
 async function captureFrame(sendResponse) {
   try {
-    const tabId = selectedTabId || callState.tabId;
-    let tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null;
+    const targetTabId = selectedTabId || callState.tabId;
+    let tab = targetTabId ? await chrome.tabs.get(targetTabId).catch(() => null) : null;
 
     if (!tab) {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -167,7 +184,24 @@ async function captureFrame(sendResponse) {
 
     if (!tab) throw new Error('Nenhuma aba disponível para captura de frame');
 
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png', quality: 95 });
+    // Guarda a aba atualmente ativa nesta janela para restaurar depois
+    const currentWindowId = tab.windowId;
+    const [originalActiveTab] = await chrome.tabs.query({ windowId: currentWindowId, active: true });
+
+    // Ativa a aba que queremos capturar (se não for a ativa)
+    if (originalActiveTab && originalActiveTab.id !== tab.id) {
+      await chrome.tabs.update(tab.id, { active: true });
+      // Pequeno delay para garantir que a aba foi renderizada
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    const dataUrl = await chrome.tabs.captureVisibleTab(currentWindowId, { format: 'png', quality: 95 });
+
+    // Restaura a aba original (se diferente da capturada)
+    if (originalActiveTab && originalActiveTab.id !== tab.id) {
+      await chrome.tabs.update(originalActiveTab.id, { active: true });
+    }
+
     sendResponse({ success: true, dataUrl });
   } catch (err) {
     sendResponse({ success: false, error: err.message });
