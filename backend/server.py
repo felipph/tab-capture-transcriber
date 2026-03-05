@@ -324,7 +324,7 @@ async def handle_binary(session: Session, websocket: WebSocketServerProtocol, da
             log(f"  [dim]→[/dim] [yellow]Frame #{session.frame_count-1}[/yellow] "
                 f"salvo: [dim]{Path(path).name}[/dim]")
         else:
-            log(f"  [dim]→ Frame descartado (mesmo slide)[/dim]")
+            log(f"  [dim]→ Frame descartado (mesmo slide) — salvo em frames_discarded/[/dim]")
 
     else:
         # Tipo desconhecido — salva como áudio por segurança
